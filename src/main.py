@@ -2,7 +2,7 @@ from node import Node
 from data_loader import CaseDataLoader
 import pandas as pd
 
-def main():
+def fit():
     data_loader = CaseDataLoader(root="data/case_data")
     # county_df, metadata = data_loader.load_county("42003")
     for state in ["Pennsylvania", "New York", "California", "Texas", "Florida"]:
@@ -25,7 +25,14 @@ def main():
         example = Node(state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
 
         example.fit_model(start = start, end = end) 
-        example.plot_results(start = start, end = start + 180, save_path="results")
+        states = example.predict(start = start, end = start + 180)
+        example.plot_results(states, start = start, end = start + 180, save_path="results")
+        
+def simulate():
+    example = Node("toy", model_type="SIR", mode="simulate", case_data=None, total_population=1000000)
+    states = example.predict(start = 0, end = 180, initial_state=[999000, 1000, 0], theta=[0.5, 0.1])
+    example.plot_results(states, start = 0, end = 180, save_path="results")
 
 if __name__ == "__main__":
-    main()
+    # fit()
+    simulate()

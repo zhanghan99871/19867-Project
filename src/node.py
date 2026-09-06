@@ -1,12 +1,19 @@
 import numpy as np
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+from pathlib import Path
+import os 
+from model import SIR, SIRD
 
 class Node:
-    def __init__(self, id, model_type="SIRD", case_data=None, total_population=0, period=14):
+    def __init__(self, id, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14):
+        # mode can be "fit" or "simulate"
         self.id = id
+        self.mode = mode
         self.model_type = model_type
         self.period = period
+        self.fited = False
+        self.model = None
         if model_type == "SIRD":
             self.params = {
                 "beta": 0.25,
@@ -22,49 +29,27 @@ class Node:
             raise NotImplementedError(
                 f"Model type {model_type} is not implemented."
             )
-
         self.case_data = case_data
         self.total_population = total_population
 
         self.population_flow_data = {}
 
-    def sird_step(self, state, theta):
-        """
-        One-day Euler update.
-        """
+    def sird_step(self, state, theta, method="euler"):
         N = self.total_population
 
         if self.model_type == "SIR":
-            S, I, R = state
-            beta, gamma = theta
-
-            new_infected = beta * S * I / N
-            new_recovered = gamma * I
-
-            return np.array([
-                S - new_infected,
-                I + new_infected - new_recovered,
-                R + new_recovered
-            ])
+            if self.model is None:
+                self.model = SIR(theta, N, method=method)
+            return self.model.step(state)
         elif self.model_type == "SIRD":
-            S, I, R, D = state
-            beta, gamma, mu = theta
-
-            new_infected = beta * S * I / N
-            new_recovered = gamma * I
-            new_deaths = mu * I
-
-            return np.array([
-                S - new_infected,
-                I + new_infected - new_recovered - new_deaths,
-                R + new_recovered,
-                D + new_deaths
-            ])
+            if self.model is None:
+                self.model = SIRD(theta, N, method=method)
+            return self.model.step(state)
         else:
             raise NotImplementedError(
                 f"Model type {self.model_type} is not implemented."
-            )
-
+            )       
+            
     def sird_simulate(self, initial_state, T, theta=None):
         if self.model_type == "SIR":
             if theta is None:
@@ -235,71 +220,101 @@ class Node:
 
         return result
     
-    def plot_results(self, start, end=None, save_path=None):
-        if end is None:
-            end = len(self.case_data) - 1
-        if not self.fited:
+    def predict(self, start, end, initial_state=None, theta=None):
+        if not self.fited and self.mode == "fit":
             print("Model has not been fitted yet. Please call fit_model() first.")
             return
-        if self.model_type == "SIR":
-            initial_state = np.array([
-                self.total_population - self.case_data["confirmed"].iloc[start],
-                self.case_data["I_est"].iloc[start],
-                self.case_data["confirmed"].iloc[start] - self.case_data["I_est"].iloc[start]
-            ])
-            theta = (self.params["beta"], self.params["gamma"])
-        elif self.model_type == "SIRD":
-            initial_state = np.array([
-                self.total_population - self.case_data["confirmed"].iloc[start],
-                self.case_data["I_est"].iloc[start],
-                self.case_data["confirmed"].iloc[start] - self.case_data["I_est"].iloc[start] - self.case_data["deaths"].iloc[start],
-                self.case_data["deaths"].iloc[start]
-            ])
-            theta = (self.params["beta"], self.params["gamma"], self.params["mu"])
+        if end is None:
+            end = len(self.case_data) - 1
+        if self.mode == "simulate":
+            if initial_state is None or theta is None:
+                raise ValueError("For simulation mode, initial_state and theta must be provided.")
+        else:
+            if self.model_type == "SIR":
+                initial_state = np.array([
+                    self.total_population - self.case_data["confirmed"].iloc[start],
+                    self.case_data["I_est"].iloc[start],
+                    self.case_data["confirmed"].iloc[start] - self.case_data["I_est"].iloc[start]
+                ])
+                theta = (self.params["beta"], self.params["gamma"])
+            elif self.model_type == "SIRD":
+                initial_state = np.array([
+                    self.total_population - self.case_data["confirmed"].iloc[start],
+                    self.case_data["I_est"].iloc[start],
+                    self.case_data["confirmed"].iloc[start] - self.case_data["I_est"].iloc[start] - self.case_data["deaths"].iloc[start],
+                    self.case_data["deaths"].iloc[start]
+                ])
+                theta = (self.params["beta"], self.params["gamma"], self.params["mu"])
         states = self.sird_simulate(
             initial_state=initial_state,
             T=end - start + 1,
             theta=theta
         )
+        return states
+    
+    def plot_results(self, states, start, end=None, save_path=None):
+        if end is None:
+            end = len(self.case_data) - 1
 
         C_pred = self.total_population - states[:, 0]
 
         plt.figure(figsize=(12, 6))
-
-        plt.plot(
-            self.case_data["date"].iloc[start:end+1],
-            self.case_data["confirmed"].iloc[start:end+1],
-            label="JHU confirmed"
-        )
-
-        plt.plot(
-            self.case_data["date"].iloc[start:end+1],
-            C_pred,
-            "--",
-            label="SIRD predicted"
-        )
-        if self.model_type == "SIRD":
-            D_pred = states[:, 3]
+        if self.mode == "fit":
             plt.plot(
                 self.case_data["date"].iloc[start:end+1],
-                self.case_data["deaths"].iloc[start:end+1],
-                label="JHU deaths"
+                self.case_data["confirmed"].iloc[start:end+1],
+                label="JHU confirmed"
             )
 
             plt.plot(
                 self.case_data["date"].iloc[start:end+1],
-                D_pred,
+                C_pred,
                 "--",
                 label="SIRD predicted"
             )
+        elif self.mode == "simulate":
+            plt.plot(
+                states[:, 0],
+                label="Susceptible"
+            )
+            plt.plot(
+                states[:, 1],
+                label="Infected"
+            )
+            plt.plot(
+                states[:, 2],
+                label="Recovered"
+            )
+        if self.model_type == "SIRD":
+            D_pred = states[:, 3]
+            if self.mode == "fit":
+                plt.plot(
+                    self.case_data["date"].iloc[start:end+1],
+                    self.case_data["deaths"].iloc[start:end+1],
+                    label="JHU deaths"
+                )
+
+                plt.plot(
+                    self.case_data["date"].iloc[start:end+1],
+                    D_pred,
+                    "--",
+                    label="SIRD predicted"
+                )
+            elif self.mode == "simulate":
+                plt.plot(
+                    states[:, 3],
+                    label="Deceased"
+                )
 
         plt.xlabel("Date")
         plt.ylabel("Cumulative cases")
         plt.legend()
         plt.xticks(rotation=30)
         plt.tight_layout(rect=[0, 0, 1, 0.95])
-        plt.title(f"Fitted SIR Model for {self.id}")
+        plt.title(f"{self.mode.capitalize()} {self.model_type} Model for {self.id}")
         if save_path:
-            plt.savefig(save_path + f"/{self.id}_{self.model_type}.png")
+            path = Path(save_path + f"/{self.mode.capitalize()}/{self.model_type}")
+            os.makedirs(path, exist_ok=True)
+            plt.savefig(path / f"{self.id}.png")
         else:
             plt.show()
