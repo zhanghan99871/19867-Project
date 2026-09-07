@@ -41,9 +41,10 @@ def test_flow():
     # flow_matrix_range = flow_loader.flow_matrix_range("2020-01-01", "2020-01-10", flow_type="pop_flows", include_self=True)
 
 def simulate_flow():
-    np.random.seed(42)
+    np.random.seed(7)
     node_ids = ["A", "B", "C", "D"]
     populations = [100_000, 80_000, 120_000, 60_000]
+    T = 100
 
     nodes = [
         Node(
@@ -54,44 +55,8 @@ def simulate_flow():
         )
         for node_id, N in zip(node_ids, populations)
     ]
-    F = pd.DataFrame(
-        [
-            [0,    1000,    0,  500],
-            [1000,    0,  800,    0],
-            [0,     800,    0, 1200],
-            [500,     0, 1200,    0],
-        ],
-        index=node_ids,
-        columns=node_ids,
-        dtype=float,
-    )
-    T = 100
-    dates = pd.date_range("2020-01-01", periods=T - 1, freq="D")
-
-    flow_matrix_dict = {
-        date: F.copy()
-        for date in dates
-    }
-    network = Network(
-        nodes=nodes,
-        flow_matrix_dict=flow_matrix_dict,
-        mode="simulate",
-        method="euler",
-    )
 
     n = len(nodes)
-
-    beta = np.random.uniform(0.2, 0.4, n)
-    gamma = np.random.uniform(0.08, 0.15, n)
-
-    # Different travel transmission parameter for each node
-    beta_travel = np.random.uniform(0.05, 0.2, n)
-
-    theta = (
-        beta,
-        gamma,
-        beta_travel,
-    )
 
     N = np.asarray(populations, dtype=float)
 
@@ -108,6 +73,39 @@ def simulate_flow():
         I0,
         R0,
     ])
+    # simulate isolated version 
+    clusters = Clusters(nodes)
+    clusters.random_initializer()
+    cluster_theta = clusters.get_all()
+    print(cluster_theta)
+    cluster_initial_state = {node.id: initial_state[i] for i, node in enumerate(nodes)}
+    cluster_predictions = clusters.predict_all(start=0, end=T-1, thetas=cluster_theta, initial_states=cluster_initial_state)
+    clusters.plot_all(cluster_predictions, start=0, end=T-1, save_path="results/clusters")
+    F = pd.DataFrame(
+        [
+            [0,    1000,    0,  500],
+            [1000,    0,  800,    0],
+            [0,     800,    0, 1200],
+            [500,     0, 1200,    0],
+        ],
+        index=node_ids,
+        columns=node_ids,
+        dtype=float,
+    )
+    dates = pd.date_range("2020-01-01", periods=T - 1, freq="D")
+
+    flow_matrix_dict = {
+        date: F.copy()
+        for date in dates
+    }
+    network = Network(
+        nodes=nodes,
+        flow_matrix_dict=flow_matrix_dict,
+        mode="simulate",
+        method="euler",
+    )
+    network.set_beta_travel(10.0)
+    theta = network.model.get()
     states = network.predict(
         start=0,
         end=T - 1,
@@ -116,7 +114,9 @@ def simulate_flow():
         flow_keys=list(dates),
     )
     
-    network.plot_all(states, 0, T-1, save_path="results")
+    network.plot_all(states, 0, T-1, save_path="results/network")
+    
+    
 
 if __name__ == "__main__":
     # fit()

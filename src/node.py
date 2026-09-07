@@ -34,6 +34,9 @@ class Node:
             )
         self.case_data = case_data
         self.total_population = total_population
+    
+    def get(self):
+        return self.params.copy()
 
     def step(self, state, theta, t):
         N = self.total_population
@@ -316,17 +319,28 @@ class Node:
 class Clusters:
     def __init__(self, nodes):
         self.nodes = nodes
+        self.sum_node = Node(id="sum_node", model_type=self.nodes[0].model_type, total_population=sum(node.total_population for node in nodes), mode="simulate")
+    
+    def get_all(self):
+        result = {}
+        for node in self.nodes:
+            node_params = node.get()
+            if node.model_type == "SIRD":
+                result[node.id] = tuple(node_params[i] for i in ["beta", "gamma", "mu"])
+            else:
+                result[node.id] = tuple(node_params[i] for i in ["beta", "gamma"])
+        return result
         
-    def random_initializer(self):
+    def random_initializer(self, beta_range=(0.1, 0.5), gamma_range=(0.05, 0.2), mu_range=(0.001, 0.01)):
         for node in self.nodes:
             print(f"Randomly initializing model for {node.id}...")
             if node.model_type == "SIR":
-                node.params["beta"] = np.random.uniform(0.1, 0.5)
-                node.params["gamma"] = np.random.uniform(0.05, 0.2)
+                node.params["beta"] = np.random.uniform(*beta_range)
+                node.params["gamma"] = np.random.uniform(*gamma_range)
             elif node.model_type == "SIRD":
-                node.params["beta"] = np.random.uniform(0.1, 0.5)
-                node.params["gamma"] = np.random.uniform(0.05, 0.2)
-                node.params["mu"] = np.random.uniform(0.001, 0.01)
+                node.params["beta"] = np.random.uniform(*beta_range)
+                node.params["gamma"] = np.random.uniform(*gamma_range)
+                node.params["mu"] = np.random.uniform(*mu_range)
             print(f"Finished initializing model for {node.id}.")
     
     def fit_all(self, start, end):
@@ -359,11 +373,20 @@ class Clusters:
 
         return predictions
 
-    def plot_all(self, predictions, start, end=None, save_path=None):
+    def plot_all(self, predictions, start, end=None, save_path=None, plot_sum=True):
         for node in self.nodes:
-            print(f"Plotting results for {node.id}...")
+            print(f"Plotting results for node {node.id}...")
             node.plot_results(predictions[node.id], start, end, save_path)
-            print(f"Finished plotting results for {node.id}.")
+            print(f"Finished plotting results for node {node.id}.")
+        if plot_sum:
+            # Aggregate predictions for the sum_node
+            predictions[self.sum_node.id] = sum(
+                predictions[node.id] for node in self.nodes
+            )
+            print(f"Plotting results for node {self.sum_node.id}...")
+            self.sum_node.plot_results(predictions[self.sum_node.id], start, end, save_path)
+            print(f"Finished plotting results for node {self.sum_node.id}.")
+        
             
 class Network:
     def __init__(self, nodes, flow_matrix_dict, mode="fit", method="euler"):
@@ -385,6 +408,20 @@ class Network:
             flow_matrix_dict=self.flow_matrix_dict,
             method=method,
         )
+        self.sum_node = Node(id="sum_node", model_type=self.nodes[0].model_type, total_population=sum(node.total_population for node in nodes), mode="simulate")
+        
+    def set_beta_travel(self, beta_travel):
+        if np.isscalar(beta_travel):
+            x0 = np.full(self.num_nodes, beta_travel, dtype=float)
+        else:
+            x0 = np.asarray(beta_travel, dtype=float)
+
+        if x0.shape != (self.num_nodes,):
+            raise ValueError(
+                f"beta_travel must have shape ({self.num_nodes},), got {x0.shape}"
+            )
+
+        self.model.beta_travel = x0
 
     def _prepare_flow_matrices(self, flow_matrix_dict):
         prepared = {}
@@ -416,9 +453,6 @@ class Network:
         self.model.reset((beta, gamma, self.model.beta_travel))
 
     def _get_fit_data(self, start, end):
-        if end <= start:
-            raise ValueError("end must be greater than start.")
-
         ref_dates = pd.to_datetime(
             self.nodes[0].case_data["date"].iloc[start:end + 1]
         ).reset_index(drop=True)
@@ -592,13 +626,27 @@ class Network:
             for i, node_id in enumerate(self.node_ids)
         }
 
-    def plot_all(self, states, start, end=None, save_path=None):
+    def plot_all(self, states, start, end=None, save_path=None, plot_sum=True):
         predictions = self.split_predictions(states)
 
         for node in self.nodes:
+            print(f"Plotting results for node {node.id}...")
             node.plot_results(
                 predictions[node.id],
                 start=start,
                 end=end,
                 save_path=save_path,
             )
+            print(f"Finished plotting results for node {node.id}.")
+        
+        # Plot the aggregated results for the sum_node
+        if plot_sum:
+            print(f"Plotting results for node {self.sum_node.id}...")
+            sum_states = np.sum(states, axis=1)
+            self.sum_node.plot_results(
+                sum_states,
+                start=start,
+                end=end,
+                save_path=save_path,
+            )
+            print(f"Finished plotting results for node {self.sum_node.id}.")
