@@ -1,5 +1,5 @@
 from node import Node 
-from data_loader import CaseDataLoader
+from data_loader import CaseDataLoader, FlowDataLoader
 import pandas as pd
 
 def fit():
@@ -33,6 +33,14 @@ def simulate():
     states = example.predict(start = 0, end = 180, initial_state=[999000, 1000, 0], theta=[0.5, 0.1])
     example.plot_results(states, start = 0, end = 180, save_path="results")
 
+def test_flow():
+    flow_loader = FlowDataLoader(root="data/flow_data/state")
+    flow_matrix = flow_loader.flow_matrix("2020-01-01", flow_type="pop_flows", include_self=False)
+    print(flow_loader.flow_summary(flow_matrix))
+    # flow_matrix_range = flow_loader.flow_matrix_range("2020-01-01", "2020-01-10", flow_type="pop_flows", include_self=True)
+    
+
 if __name__ == "__main__":
     # fit()
-    simulate()
+    # simulate()
+    test_flow()

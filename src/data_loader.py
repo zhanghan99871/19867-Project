@@ -201,3 +201,164 @@ class CaseDataLoader:
         }
 
         return state_df, metadata
+
+
+class FlowDataLoader:
+    def __init__(self, root="data/flow_data/state"):
+        self.root = Path(root)
+
+    def _get_path(self, date):
+        """
+        Convert a date into the corresponding CSV filename.
+        """
+        date = pd.to_datetime(date)
+
+        filename = (
+            f"daily_state2state_"
+            f"{date.year:04d}_{date.month:02d}_{date.day:02d}.csv"
+        )
+
+        return self.root / filename
+
+    def load_day(self, date):
+        """
+        Load flow data for one day.
+
+        Returns only:
+            geoid_o, geoid_d, visitor_flows, pop_flows
+        """
+        path = self._get_path(date)
+
+        if not path.exists():
+            raise FileNotFoundError(f"Flow data not found: {path}")
+
+        df = pd.read_csv(
+            path,
+            usecols=["geoid_o", "geoid_d", "pop_flows", "visitor_flows"],
+            dtype={
+                "geoid_o": str,
+                "geoid_d": str,
+            },
+        )
+
+        df["geoid_o"] = df["geoid_o"].str.zfill(2)
+        df["geoid_d"] = df["geoid_d"].str.zfill(2)
+
+        return df
+
+    def load_range(self, start_date, end_date):
+        """
+        Load and concatenate all daily flow files
+        between start_date and end_date (inclusive).
+        """
+        dates = pd.date_range(start_date, end_date, freq="D")
+
+        frames = []
+
+        for date in dates:
+            path = self._get_path(date)
+
+            if not path.exists():
+                print(f"Warning: missing {path.name}")
+                continue
+
+            frames.append(self.load_day(date))
+
+        if not frames:
+            raise ValueError(
+                f"No flow data found between {start_date} and {end_date}"
+            )
+
+        return pd.concat(frames, ignore_index=True)
+
+    def flow_matrix(
+        self,
+        date,
+        flow_type="pop_flows",
+        include_self=False,
+    ):
+        """
+        Return a matrix F where
+
+            F[i, j] = flow from state i -> state j
+
+        Parameters
+        ----------
+        date : str or datetime
+            Date to load.
+
+        flow_type : str
+            "pop_flows" or "visitor_flows".
+
+        include_self : bool
+            Whether to include within-state flows.
+        """
+        if flow_type not in {"pop_flows", "visitor_flows"}:
+            raise ValueError(
+                "flow_type must be 'pop_flows' or 'visitor_flows'"
+            )
+
+        df = self.load_day(date)
+
+        if not include_self:
+            df = df[df["geoid_o"] != df["geoid_d"]]
+
+        matrix = df.pivot_table(
+            index="geoid_o",
+            columns="geoid_d",
+            values=flow_type,
+            aggfunc="sum",
+            fill_value=0,
+        )
+
+        # Make origin/destination state sets identical
+        states = sorted(
+            set(matrix.index).union(matrix.columns)
+        )
+
+        matrix = matrix.reindex(
+            index=states,
+            columns=states,
+            fill_value=0,
+        )
+
+        return matrix
+
+    def flow_matrix_range(
+        self,
+        start_date,
+        end_date,
+        flow_type="pop_flows",
+        include_self=False,
+    ):
+        """
+        Return a dictionary of flow matrices for each day
+        between start_date and end_date (inclusive).
+        """
+        dates = pd.date_range(start_date, end_date, freq="D")
+
+        matrices = {}
+
+        for date in dates:
+            try:
+                matrices[date] = self.flow_matrix(
+                    date,
+                    flow_type=flow_type,
+                    include_self=include_self,
+                )
+            except FileNotFoundError:
+                print(f"Warning: missing flow data for {date}")
+
+        return matrices
+    
+    def flow_summary(self, flow_matrix):
+        outflow = flow_matrix.sum(axis=1)
+        inflow = flow_matrix.sum(axis=0)
+
+        summary = pd.DataFrame({
+            "inflow": inflow,
+            "outflow": outflow,
+            "net_flow": inflow - outflow,
+        })
+
+        return summary

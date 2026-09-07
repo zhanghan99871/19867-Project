@@ -3,7 +3,8 @@ from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 from pathlib import Path
 import os 
-from model import SIR, SIRD
+from model import SIR, SIRD, NetworkSIRSimple
+import pandas as pd
 
 class Node:
     def __init__(self, id, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14):
@@ -32,9 +33,7 @@ class Node:
         self.case_data = case_data
         self.total_population = total_population
 
-        self.population_flow_data = {}
-
-    def sird_step(self, state, theta, method="euler"):
+    def step(self, state, theta, method="euler"):
         N = self.total_population
 
         if self.model_type == "SIR":
@@ -50,7 +49,7 @@ class Node:
                 f"Model type {self.model_type} is not implemented."
             )       
             
-    def sird_simulate(self, initial_state, T, theta=None):
+    def run(self, initial_state, T, theta=None):
         if self.model_type == "SIR":
             if theta is None:
                 theta = np.array([
@@ -72,7 +71,7 @@ class Node:
             states[0] = initial_state
 
         for t in range(T - 1):
-            states[t + 1] = self.sird_step(
+            states[t + 1] = self.step(
                 states[t],
                 theta
             )
@@ -81,7 +80,7 @@ class Node:
 
     def objective(self, theta, initial_state, T, C_obs, D_obs):
 
-        states = self.sird_simulate(
+        states = self.run(
             initial_state=initial_state,
             T=T,
             theta=theta
@@ -133,7 +132,7 @@ class Node:
 
             return case_loss + death_loss
 
-    def analyzer(self, result):
+    def analyze(self, result):
         if self.model_type == "SIR":
             beta_hat, gamma_hat = result.x
             self.params["beta"] = beta_hat
@@ -207,6 +206,10 @@ class Node:
                 (1e-6, 1.0),   # gamma
                 (1e-8, 0.2)    # mu
             ]
+        else:
+            raise NotImplementedError(
+                f"Model type {self.model_type} is not implemented."
+            )
 
         result = minimize(
             self.objective,
@@ -216,7 +219,7 @@ class Node:
             bounds=bounds
         )
 
-        self.analyzer(result)
+        self.analyze(result)
 
         return result
     
@@ -245,7 +248,7 @@ class Node:
                     self.case_data["deaths"].iloc[start]
                 ])
                 theta = (self.params["beta"], self.params["gamma"], self.params["mu"])
-        states = self.sird_simulate(
+        states = self.run(
             initial_state=initial_state,
             T=end - start + 1,
             theta=theta
@@ -318,3 +321,569 @@ class Node:
             plt.savefig(path / f"{self.id}.png")
         else:
             plt.show()
+            
+class Clusters:
+    def __init__(self, nodes):
+        self.nodes = nodes
+        
+    def random_initializer(self):
+        for node in self.nodes:
+            print(f"Randomly initializing model for {node.id}...")
+            if node.model_type == "SIR":
+                node.params["beta"] = np.random.uniform(0.1, 0.5)
+                node.params["gamma"] = np.random.uniform(0.05, 0.2)
+            elif node.model_type == "SIRD":
+                node.params["beta"] = np.random.uniform(0.1, 0.5)
+                node.params["gamma"] = np.random.uniform(0.05, 0.2)
+                node.params["mu"] = np.random.uniform(0.001, 0.01)
+            print(f"Finished initializing model for {node.id}.")
+    
+    def fit_all(self, start, end):
+        for node in self.nodes:
+            print(f"Fitting model for {node.id}...")
+            node.fit_model(start, end)
+            print(f"Finished fitting model for {node.id}.")
+            
+    def predict_all(self, start, end):
+        predictions = {}
+        for node in self.nodes:
+            print(f"Predicting for {node.id}...")
+            states = node.predict(start, end)
+            predictions[node.id] = states
+            print(f"Finished predicting for {node.id}.")
+        return predictions
+
+    def plot_all(self, predictions, start, end=None, save_path=None):
+        for node in self.nodes:
+            print(f"Plotting results for {node.id}...")
+            node.plot_results(predictions[node.id], start, end, save_path)
+            print(f"Finished plotting results for {node.id}.")
+            
+class Network:
+    def __init__(
+        self,
+        nodes,
+        flow_matrix_dict
+    ):
+        self.nodes = nodes
+        self.node_ids = [node.id for node in nodes]
+        self.num_nodes = len(nodes)
+
+        self.fited = False
+
+        self.N = np.array(
+            [node.total_population for node in nodes],
+            dtype=float,
+        )
+
+        self.beta = np.array(
+            [node.params["beta"] for node in nodes],
+            dtype=float,
+        )
+
+        self.gamma = np.array(
+            [node.params["gamma"] for node in nodes],
+            dtype=float,
+        )
+
+        self.flow_matrix_dict = (
+            self._prepare_flow_matrices(
+                flow_matrix_dict
+            )
+        )
+
+        self.model = None
+
+    def _prepare_flow_matrices(self, flow_matrix_dict):
+        """
+        Prepare daily flow matrices for NetworkSIRSimple.
+
+        Parameters
+        ----------
+        flow_matrix_dict : dict
+            {
+                pd.Timestamp: pd.DataFrame
+            }
+
+            Each DataFrame has:
+                index   = origin node IDs
+                columns = destination node IDs
+
+        Returns
+        -------
+        dict
+            {
+                pd.Timestamp: np.ndarray
+            }
+
+            Every matrix has shape
+                (num_nodes, num_nodes)
+
+            and follows exactly the ordering in self.node_ids.
+        """
+
+        prepared = {}
+
+        # Make node IDs consistent with DataFrame labels
+        node_ids = [str(node_id) for node_id in self.node_ids]
+
+        for date in sorted(flow_matrix_dict.keys()):
+
+            F = flow_matrix_dict[date]
+
+            if not hasattr(F, "reindex"):
+                raise TypeError(
+                    f"Flow matrix for {date} must be a pandas DataFrame."
+                )
+
+            # Make index/column types consistent
+            F = F.copy()
+            F.index = F.index.astype(str)
+            F.columns = F.columns.astype(str)
+
+            # Reorder matrix to exactly match Network node ordering.
+            #
+            # Missing nodes automatically get flow = 0.
+            F = F.reindex(
+                index=node_ids,
+                columns=node_ids,
+                fill_value=0.0,
+            )
+
+            # Convert to numpy for fast simulation
+            F = F.to_numpy(dtype=float)
+
+            if F.shape != (self.num_nodes, self.num_nodes):
+                raise ValueError(
+                    f"Flow matrix on {date} has shape {F.shape}, "
+                    f"expected ({self.num_nodes}, {self.num_nodes})."
+                )
+
+            prepared[pd.Timestamp(date)] = F
+
+        return prepared
+
+    def _refresh_local_params(self):
+        """
+        Reload beta/gamma from the Node objects.
+
+        Useful if Network was created before the nodes were fitted.
+        """
+        self.beta = np.array(
+            [node.params["beta"] for node in self.nodes],
+            dtype=float,
+        )
+
+        self.gamma = np.array(
+            [node.params["gamma"] for node in self.nodes],
+            dtype=float,
+        )
+
+        self.model.beta = self.beta.copy()
+        self.model.gamma = self.gamma.copy()
+
+    def _set_beta_travel(self, beta_travel):
+        self.beta_travel = beta_travel
+        self.model.beta_travel = beta_travel
+
+    def _get_fit_data(self, start, end):
+        """
+        Collect observed confirmed cases and corresponding flow dates.
+
+        Returns
+        -------
+        C_obs : ndarray, shape (T, num_nodes)
+            Observed cumulative confirmed cases.
+
+        flow_keys : list[pd.Timestamp]
+            Dates corresponding to each transition:
+                t -> t+1
+
+            Therefore len(flow_keys) = T - 1
+        """
+        if end <= start:
+            raise ValueError("end must be greater than start.")
+
+        # Use first node as the reference date sequence
+        ref_dates = pd.to_datetime(
+            self.nodes[0].case_data["date"].iloc[start:end + 1]
+        ).reset_index(drop=True)
+
+        confirmed = []
+
+        for node in self.nodes:
+            node_dates = pd.to_datetime(
+                node.case_data["date"].iloc[start:end + 1]
+            ).reset_index(drop=True)
+
+            # Make sure every node represents the same dates
+            if not np.array_equal(
+                ref_dates.to_numpy(),
+                node_dates.to_numpy(),
+            ):
+                raise ValueError(
+                    f"Date range for node {node.id} "
+                    "does not match the other nodes."
+                )
+
+            confirmed.append(
+                node.case_data["confirmed"]
+                .iloc[start:end + 1]
+                .to_numpy(dtype=float)
+            )
+
+        # shape:
+        #     (T, num_nodes)
+        C_obs = np.column_stack(confirmed)
+
+        # A simulation of T states needs T-1 transitions
+        flow_keys = [
+            pd.Timestamp(date).normalize()
+            for date in ref_dates.iloc[:-1]
+        ]
+
+        missing = [
+            date
+            for date in flow_keys
+            if date not in self.flow_matrix_dict
+        ]
+
+        if missing:
+            raise ValueError(
+                "Missing flow matrices for dates: "
+                + ", ".join(str(d.date()) for d in missing[:10])
+                + (" ..." if len(missing) > 10 else "")
+            )
+
+        return C_obs, flow_keys
+
+    def initial_state_from_data(self, start):
+        states = []
+
+        for node in self.nodes:
+
+            if "I_est" not in node.case_data.columns:
+
+                node.case_data["new_cases"] = (
+                    node.case_data["confirmed"]
+                    .diff()
+                    .clip(lower=0)
+                )
+
+                node.case_data["I_est"] = (
+                    node.case_data["new_cases"]
+                    .rolling(
+                        node.period,
+                        min_periods=1,
+                    )
+                    .sum()
+                )
+
+            confirmed = (
+                node.case_data["confirmed"]
+                .iloc[start]
+            )
+
+            I = (
+                node.case_data["I_est"]
+                .iloc[start]
+            )
+
+            S = (
+                node.total_population
+                - confirmed
+            )
+
+            R = confirmed - I
+
+            states.append([S, I, R])
+
+        return np.asarray(
+            states,
+            dtype=float,
+        )
+
+    def step(self, states, theta, t, method="euler"):
+        if self.model is None:
+            self.model = NetworkSIRSimple(
+                beta=self.beta,
+                gamma=self.gamma,
+                beta_travel=theta,
+                N=self.N,
+                flow_matrix_dict=self.flow_matrix_dict,
+                method=method
+            )
+
+        return self.model.step(states, t)
+    
+    def run(
+        self,
+        initial_state,
+        T,
+        flow_keys=None,
+    ):
+        initial_state = np.asarray(
+            initial_state,
+            dtype=float,
+        )
+
+        if initial_state.shape != (
+            self.num_nodes,
+            3,
+        ):
+            raise ValueError(
+                f"Expected initial_state shape "
+                f"({self.num_nodes}, 3), "
+                f"got {initial_state.shape}"
+            )
+
+        states = np.zeros(
+            (
+                T,
+                self.num_nodes,
+                3,
+            ),
+            dtype=float,
+        )
+
+        states[0] = initial_state
+
+        if flow_keys is None:
+            flow_keys = list(
+                self.flow_matrix_dict.keys()
+            )
+
+        if len(flow_keys) < T - 1:
+            raise ValueError(
+                f"Need {T - 1} flow matrices, "
+                f"got {len(flow_keys)}"
+            )
+
+        for k in range(T - 1):
+
+            S = states[k, :, 0]
+            I = states[k, :, 1]
+            R = states[k, :, 2]
+
+            (
+                S_next,
+                I_next,
+                R_next,
+            ) = self.model.step(
+                (S, I, R),
+                flow_keys[k],
+            )
+
+            states[k + 1, :, 0] = S_next
+            states[k + 1, :, 1] = I_next
+            states[k + 1, :, 2] = R_next
+
+        return states
+
+    def objective(
+        self,
+        theta,
+        initial_state,
+        flow_keys,
+        C_obs,
+    ):
+        """
+        Objective for fitting network transmission strength.
+
+        Parameters
+        ----------
+        theta : array-like
+            theta[0] = beta_travel
+
+        initial_state : ndarray
+            shape (num_nodes, 3)
+
+        flow_keys : list
+            Flow matrix date for each simulation transition.
+
+        C_obs : ndarray
+            shape (T, num_nodes)
+            Observed cumulative confirmed cases.
+        """
+
+        beta_travel = float(theta[0])
+
+        # Update network transmission parameter
+        self.model.beta_travel = beta_travel
+
+        T = C_obs.shape[0]
+
+        states = self.run(
+            initial_state=initial_state,
+            T=T,
+            flow_keys=flow_keys,
+        )
+
+        # Invalid numerical simulation
+        if not np.all(np.isfinite(states)):
+            return 1e20
+
+        if np.any(states < 0):
+            return 1e20
+
+        # states shape:
+        #   (T, num_nodes, 3)
+        #
+        # cumulative infected:
+        #
+        #   C = N - S
+        #
+        # because there is no migration.
+        S_pred = states[:, :, 0]
+
+        C_pred = (
+            self.N[None, :]
+            - S_pred
+        )
+
+        # Normalize each state separately.
+        #
+        # Otherwise large-population states like CA/TX
+        # dominate small states.
+        scales = np.maximum(
+            C_obs.max(axis=0),
+            1.0,
+        )
+
+        normalized_error = (
+            C_pred - C_obs
+        ) / scales[None, :]
+
+        # Equal weight for each state
+        loss_per_node = np.mean(
+            normalized_error ** 2,
+            axis=0,
+        )
+
+        loss = np.mean(loss_per_node)
+
+        return loss
+    
+    def analyze(self, result):
+        beta_travel_hat = float(result.x[0])
+
+        self.beta_travel = beta_travel_hat
+        self.model.beta_travel = beta_travel_hat
+
+        self.fited = result.success
+
+        print("Network fitting")
+        print("----------------")
+        print("success:", result.success)
+        print("loss:", result.fun)
+        print("beta_travel:", beta_travel_hat)
+
+    def fit_model(
+        self,
+        start,
+        end,
+        beta_travel0=None,
+        bounds=(1e-8, 5.0),
+    ):
+        """
+        Fit beta_travel while keeping local beta_i and gamma_i fixed.
+
+        Parameters
+        ----------
+        start : int
+            Start index in node case_data.
+
+        end : int
+            End index in node case_data, inclusive.
+
+        beta_travel0 : float, optional
+            Initial value for beta_travel.
+
+        bounds : tuple
+            Bounds for beta_travel.
+        """
+
+        # Make sure local parameters reflect the
+        # most recently fitted Node values
+        self._refresh_local_params()
+
+        # Construct initial S/I/R for every state
+        initial_state = (
+            self.initial_state_from_data(start)
+        )
+
+        # Observations and matching mobility dates
+        C_obs, flow_keys = self._get_fit_data(
+            start,
+            end,
+        )
+
+        if beta_travel0 is None:
+            beta_travel0 = self.beta_travel
+
+        x0 = np.array(
+            [beta_travel0],
+            dtype=float,
+        )
+
+        result = minimize(
+            self.objective,
+            x0=x0,
+            args=(
+                initial_state,
+                flow_keys,
+                C_obs,
+            ),
+            method="L-BFGS-B",
+            bounds=[bounds],
+        )
+
+        self.analyze(result)
+
+        return result
+
+    def predict(
+        self,
+        start,
+        end,
+        initial_state=None,
+        flow_keys=None,
+    ):
+        if initial_state is None:
+            initial_state = (
+                self.initial_state_from_data(start)
+            )
+
+        T = end - start + 1
+
+        return self.run(
+            initial_state=initial_state,
+            T=T,
+            flow_keys=flow_keys,
+        )
+
+    def split_predictions(self, states):
+        return {
+            node_id: states[:, i, :]
+            for i, node_id
+            in enumerate(self.node_ids)
+        }
+
+    def plot_all(
+        self,
+        states,
+        start,
+        end=None,
+        save_path=None,
+    ):
+        predictions = (
+            self.split_predictions(states)
+        )
+
+        for node in self.nodes:
+            node.plot_results(
+                predictions[node.id],
+                start=start,
+                end=end,
+                save_path=save_path,
+            )

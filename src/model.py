@@ -1,10 +1,11 @@
+import numpy as np
 class SIR:
     def __init__(self, theta, N, method="euler"):
-        self.beta, self.gamma = theta
+        self.beta, self.gamma = theta[0], theta[1]
         self.N = N
         self.method = method
     
-    def Euler_step(self, states):
+    def Euler_step(self, states, t):
         S, I, R = states
         new_infected = (self.beta * S * I) / self.N
         new_recovered = self.gamma * I
@@ -15,7 +16,7 @@ class SIR:
 
         return S_next, I_next, R_next
 
-    def RK4_step(self, states):
+    def RK4_step(self, states, t):
         S, I, R = states
 
         def dSdt(S, I):
@@ -49,11 +50,11 @@ class SIR:
 
         return S_next, I_next, R_next
 
-    def step(self, states):
+    def step(self, states, t):
         if self.method == "euler":
-            return self.Euler_step(states)
+            return self.Euler_step(states, t)
         elif self.method == "rk4":
-            return self.RK4_step(states)
+            return self.RK4_step(states, t)
         else:
             raise ValueError(f"Unknown method: {self.method}")
         
@@ -62,7 +63,7 @@ class SIRD(SIR):
         super().__init__(theta[:2], N, method)
         self.mu = theta[2]
 
-    def Euler_step(self, states):
+    def Euler_step(self, states, t):
         S, I, R, D = states
         new_infected = (self.beta * S * I) / self.N
         new_recovered = self.gamma * I
@@ -75,7 +76,7 @@ class SIRD(SIR):
 
         return S_next, I_next, R_next, D_next
 
-    def RK4_step(self, states):
+    def RK4_step(self, states, t):
         S, I, R, D = states
 
         def dSdt(S, I):
@@ -122,7 +123,7 @@ class SIVR(SIR):
         super().__init__(theta[:2], N, method)
         self.sigma = theta[2]
 
-    def Euler_step(self, states):
+    def Euler_step(self, states, t):
         S, I, R, V = states
         new_infected = (self.beta * S * I) / self.N
         new_recovered = self.gamma * I
@@ -135,7 +136,7 @@ class SIVR(SIR):
 
         return S_next, I_next, R_next, V_next
 
-    def RK4_step(self, states):
+    def RK4_step(self, states, t):
         S, I, R, V = states
 
         def dSdt(S, I):
@@ -176,3 +177,86 @@ class SIVR(SIR):
         V_next = V + (k1_V + 2*k2_V + 2*k3_V + k4_V) / 6
         
         return S_next, I_next, R_next, V_next
+    
+class NetworkSIRSimple:
+    """
+    Network SIR without migration.
+
+    Flow F[i, j] represents travel/exposure from residents
+    of node i to node j.
+
+    Cross-node infection pressure:
+
+        beta_travel * (F[i,j] / N[i]) * (I[j] / N[j])
+    """
+
+    def __init__(
+        self,
+        beta,
+        gamma,
+        beta_travel,
+        N,
+        flow_matrix_dict,
+    ):
+        self.beta = np.asarray(beta, dtype=float)
+        self.gamma = np.asarray(gamma, dtype=float)
+
+        self.beta_travel = beta_travel
+
+        self.N = np.asarray(N, dtype=float)
+        self.flow_matrix_dict = flow_matrix_dict
+
+    def Euler_step(self, states, t):
+        S, I, R = states
+
+        S = np.asarray(S, dtype=float)
+        I = np.asarray(I, dtype=float)
+        R = np.asarray(R, dtype=float)
+
+        F = self.flow_matrix_dict[t]
+
+        if hasattr(F, "to_numpy"):
+            F = F.to_numpy()
+
+        F = np.asarray(F, dtype=float)
+        
+        total_out = F.iloc[self.i, :].sum()
+
+        # infection prevalence in every state
+        prevalence = I / self.N
+
+        # local infection pressure
+        lambda_local = self.beta * prevalence 
+        # Per-capita outgoing mobility
+        C = F / self.N[:, None]
+
+        # Remove self-flow if desired
+        np.fill_diagonal(C, 0)
+
+        # Exposure of residents in i to prevalence in j
+        lambda_travel = (
+            self.beta_travel
+            * C.dot(prevalence)
+        )
+
+        lambda_total = lambda_local + lambda_travel
+
+        new_infected = S * lambda_total
+        new_recovered = self.gamma * I
+
+        S_next = S - new_infected
+        I_next = I + new_infected - new_recovered
+        R_next = R + new_recovered
+
+        return S_next, I_next, R_next
+    
+    def RK4_step(self, states, t):
+        raise NotImplementedError("RK4 step not implemented for NetworkSIRSimple")
+    
+    def step(self, states, t):
+        if self.method == "euler":
+            return self.Euler_step(states, t)
+        elif self.method == "rk4":
+            return self.RK4_step(states, t)
+        else:
+            raise ValueError(f"Unknown method: {self.method}")
