@@ -61,7 +61,11 @@ def simulate_flow():
     N = np.asarray(populations, dtype=float)
 
     # 0.1% - 1% initially infected
-    infected_fraction = np.random.uniform(0.001, 0.01, n)
+    # infected_fraction = np.random.uniform(0.001, 0.01, n)
+    
+    # only first node has initially infected individuals
+    infected_fraction = np.zeros(n)
+    infected_fraction[0] = 0.05  # 1% of the first node is initially infected
 
     I0 = N * infected_fraction
     R0 = np.zeros(n)
@@ -75,19 +79,22 @@ def simulate_flow():
     ])
     # simulate isolated version 
     clusters = Clusters(nodes)
-    clusters.random_initializer()
+    clusters.random_initializer(beta_range=(0.2, 0.3), gamma_range=(0.05, 0.1))
     cluster_theta = clusters.get_all()
     print(cluster_theta)
     cluster_initial_state = {node.id: initial_state[i] for i, node in enumerate(nodes)}
     cluster_predictions = clusters.predict_all(start=0, end=T-1, thetas=cluster_theta, initial_states=cluster_initial_state)
     clusters.plot_all(cluster_predictions, start=0, end=T-1, save_path="results/clusters")
+    flow_strength = 1.0
+    flow_matrix = np.array([
+                [0,    1000,    0,  500],
+                [1000,    0,  800,    0],
+                [0,     800,    0, 1200],
+                [500,     0, 1200,    0],
+            ])
+    
     F = pd.DataFrame(
-        [
-            [0,    1000,    0,  500],
-            [1000,    0,  800,    0],
-            [0,     800,    0, 1200],
-            [500,     0, 1200,    0],
-        ],
+        flow_matrix * flow_strength,
         index=node_ids,
         columns=node_ids,
         dtype=float,
@@ -104,7 +111,7 @@ def simulate_flow():
         mode="simulate",
         method="euler",
     )
-    network.set_beta_travel(10.0)
+    network.set_beta_travel(1.0)
     theta = network.model.get()
     states = network.predict(
         start=0,
