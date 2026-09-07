@@ -21,11 +21,13 @@ class Node:
                 "gamma": 0.1,
                 "mu": 0.005
             }
+            self.model = SIRD((self.params["beta"], self.params["gamma"], self.params["mu"]), total_population)
         elif model_type == "SIR":
             self.params = {
                 "beta": 0.25,
                 "gamma": 0.1
             }
+            self.model = SIR((self.params["beta"], self.params["gamma"]), total_population)
         else:
             raise NotImplementedError(
                 f"Model type {model_type} is not implemented."
@@ -33,22 +35,11 @@ class Node:
         self.case_data = case_data
         self.total_population = total_population
 
-    def step(self, state, theta, method="euler"):
+    def step(self, state, theta, t):
         N = self.total_population
+        self.model.reset(theta)
+        return self.model.step(state, t)
 
-        if self.model_type == "SIR":
-            if self.model is None:
-                self.model = SIR(theta, N, method=method)
-            return self.model.step(state)
-        elif self.model_type == "SIRD":
-            if self.model is None:
-                self.model = SIRD(theta, N, method=method)
-            return self.model.step(state)
-        else:
-            raise NotImplementedError(
-                f"Model type {self.model_type} is not implemented."
-            )       
-            
     def run(self, initial_state, T, theta=None):
         if self.model_type == "SIR":
             if theta is None:
@@ -73,7 +64,8 @@ class Node:
         for t in range(T - 1):
             states[t + 1] = self.step(
                 states[t],
-                theta
+                theta,
+                t
             )
 
         return states
@@ -160,7 +152,11 @@ class Node:
                 f"Model type {self.model_type} is not implemented."
             )
 
-    def fit_model(self, start, end):
+    def fit_model(self, start, end, bounds=[
+                (1e-6, 5.0),   # beta
+                (1e-6, 1.0),   # gamma
+                (1e-8, 0.2)    # mu
+            ]):
         self.case_data["new_cases"] = (
             self.case_data["confirmed"]
             .diff()
@@ -201,11 +197,6 @@ class Node:
                 self.params["mu"]
             ])
             
-            bounds = [
-                (1e-6, 5.0),   # beta
-                (1e-6, 1.0),   # gamma
-                (1e-8, 0.2)    # mu
-            ]
         else:
             raise NotImplementedError(
                 f"Model type {self.model_type} is not implemented."
@@ -344,11 +335,11 @@ class Clusters:
             node.fit_model(start, end)
             print(f"Finished fitting model for {node.id}.")
             
-    def predict_all(self, start, end):
+    def predict_all(self, start, end, initial_states=None, thetas=None):
         predictions = {}
         for node in self.nodes:
             print(f"Predicting for {node.id}...")
-            states = node.predict(start, end)
+            states = node.predict(start, end, initial_states=initial_states[node.id] if initial_states is not None else None, thetas=thetas[node.id] if thetas is not None else None)
             predictions[node.id] = states
             print(f"Finished predicting for {node.id}.")
         return predictions
@@ -363,27 +354,35 @@ class Network:
     def __init__(
         self,
         nodes,
-        flow_matrix_dict
+        flow_matrix_dict, 
+        mode="fit", 
+        method="euler"
     ):
         self.nodes = nodes
         self.node_ids = [node.id for node in nodes]
         self.num_nodes = len(nodes)
 
         self.fited = False
+        self.mode = mode
 
         self.N = np.array(
             [node.total_population for node in nodes],
             dtype=float,
         )
 
-        self.beta = np.array(
+        beta = np.array(
             [node.params["beta"] for node in nodes],
             dtype=float,
         )
 
-        self.gamma = np.array(
+        gamma = np.array(
             [node.params["gamma"] for node in nodes],
             dtype=float,
+        )
+        
+        beta_travel = np.array(
+            [0.1 for _ in nodes],
+            dtype=float
         )
 
         self.flow_matrix_dict = (
@@ -392,7 +391,12 @@ class Network:
             )
         )
 
-        self.model = None
+        self.model = NetworkSIRSimple(
+                theta=(beta, gamma, beta_travel),
+                N=self.N,
+                flow_matrix_dict=self.flow_matrix_dict,
+                method=method
+            )
 
     def _prepare_flow_matrices(self, flow_matrix_dict):
         """
@@ -469,22 +473,18 @@ class Network:
 
         Useful if Network was created before the nodes were fitted.
         """
-        self.beta = np.array(
+        beta = np.array(
             [node.params["beta"] for node in self.nodes],
             dtype=float,
         )
 
-        self.gamma = np.array(
+        gamma = np.array(
             [node.params["gamma"] for node in self.nodes],
             dtype=float,
         )
 
-        self.model.beta = self.beta.copy()
-        self.model.gamma = self.gamma.copy()
-
-    def _set_beta_travel(self, beta_travel):
-        self.beta_travel = beta_travel
-        self.model.beta_travel = beta_travel
+        self.model.beta = beta
+        self.model.gamma = gamma
 
     def _get_fit_data(self, start, end):
         """
@@ -603,22 +603,14 @@ class Network:
             dtype=float,
         )
 
-    def step(self, states, theta, t, method="euler"):
-        if self.model is None:
-            self.model = NetworkSIRSimple(
-                beta=self.beta,
-                gamma=self.gamma,
-                beta_travel=theta,
-                N=self.N,
-                flow_matrix_dict=self.flow_matrix_dict,
-                method=method
-            )
-
+    def step(self, states, theta, t):
+        self.model.reset(theta)
         return self.model.step(states, t)
     
     def run(
         self,
         initial_state,
+        theta, 
         T,
         flow_keys=None,
     ):
@@ -671,6 +663,7 @@ class Network:
                 R_next,
             ) = self.model.step(
                 (S, I, R),
+                theta, 
                 flow_keys[k],
             )
 
@@ -765,10 +758,7 @@ class Network:
         return loss
     
     def analyze(self, result):
-        beta_travel_hat = float(result.x[0])
-
-        self.beta_travel = beta_travel_hat
-        self.model.beta_travel = beta_travel_hat
+        self.model.reset(result.x)
 
         self.fited = result.success
 
@@ -776,7 +766,6 @@ class Network:
         print("----------------")
         print("success:", result.success)
         print("loss:", result.fun)
-        print("beta_travel:", beta_travel_hat)
 
     def fit_model(
         self,
@@ -819,7 +808,7 @@ class Network:
         )
 
         if beta_travel0 is None:
-            beta_travel0 = self.beta_travel
+            beta_travel0 = self.model.beta_travel
 
         x0 = np.array(
             [beta_travel0],
@@ -847,17 +836,28 @@ class Network:
         start,
         end,
         initial_state=None,
+        theta=None, 
         flow_keys=None,
     ):
+        if not self.fited and self.mode == "fit":
+            print("Network model has not been fitted yet. Please call fit_model() first.")
+            return
+        if self.mode == "simulate":
+            if initial_state is None or theta is None:
+                raise ValueError("For simulation mode, initial_state and theta must be provided.")
+        
         if initial_state is None:
             initial_state = (
                 self.initial_state_from_data(start)
             )
+        if theta is None: 
+            theta = self.model.get()
 
         T = end - start + 1
 
         return self.run(
             initial_state=initial_state,
+            theta=theta,
             T=T,
             flow_keys=flow_keys,
         )

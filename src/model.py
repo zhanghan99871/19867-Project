@@ -4,6 +4,9 @@ class SIR:
         self.beta, self.gamma = theta[0], theta[1]
         self.N = N
         self.method = method
+        
+    def reset(self, theta):
+        self.beta, self.gamma = theta[0], theta[1]
     
     def Euler_step(self, states, t):
         S, I, R = states
@@ -61,6 +64,10 @@ class SIR:
 class SIRD(SIR):
     def __init__(self, theta, N, method="euler"):
         super().__init__(theta[:2], N, method)
+        self.mu = theta[2]
+    
+    def reset(self, theta):
+        super().reset(theta[:2])
         self.mu = theta[2]
 
     def Euler_step(self, states, t):
@@ -121,6 +128,10 @@ class SIRD(SIR):
 class SIVR(SIR):
     def __init__(self, theta, N, method="euler"):
         super().__init__(theta[:2], N, method)
+        self.sigma = theta[2]
+    
+    def reset(self, theta):
+        super().reset(theta[:2])
         self.sigma = theta[2]
 
     def Euler_step(self, states, t):
@@ -192,19 +203,25 @@ class NetworkSIRSimple:
 
     def __init__(
         self,
-        beta,
-        gamma,
-        beta_travel,
+        theta,
         N,
         flow_matrix_dict,
     ):
-        self.beta = np.asarray(beta, dtype=float)
-        self.gamma = np.asarray(gamma, dtype=float)
+        self.beta = np.asarray(theta[0], dtype=float)
+        self.gamma = np.asarray(theta[1], dtype=float)
 
-        self.beta_travel = beta_travel
+        self.beta_travel = np.asarray(theta[2], dtype=float)
 
         self.N = np.asarray(N, dtype=float)
         self.flow_matrix_dict = flow_matrix_dict
+    
+    def reset(self, theta):
+        self.beta = np.asarray(theta[0], dtype=float)
+        self.gamma = np.asarray(theta[1], dtype=float)
+        self.beta_travel = np.asarray(theta[2], dtype=float)
+        
+    def get(self):
+        return (self.beta, self.gamma, self.beta_travel)
 
     def Euler_step(self, states, t):
         S, I, R = states
@@ -219,8 +236,6 @@ class NetworkSIRSimple:
             F = F.to_numpy()
 
         F = np.asarray(F, dtype=float)
-        
-        total_out = F.iloc[self.i, :].sum()
 
         # infection prevalence in every state
         prevalence = I / self.N
