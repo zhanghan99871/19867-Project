@@ -189,16 +189,20 @@ class SIVR(SIR):
         
         return S_next, I_next, R_next, V_next
     
+import numpy as np
+
+
 class NetworkSIRSimple:
     """
     Network SIR without migration.
 
-    Flow F[i, j] represents travel/exposure from residents
-    of node i to node j.
+    lambda_i =
+        beta_i * I_i / N_i
+        +
+        beta_travel_i *
+        sum_j (F_ij / N_i) * (I_j / N_j)
 
-    Cross-node infection pressure:
-
-        beta_travel * (F[i,j] / N[i]) * (I[j] / N[j])
+    states = (S, I, R)
     """
 
     def __init__(
@@ -206,72 +210,121 @@ class NetworkSIRSimple:
         theta,
         N,
         flow_matrix_dict,
+        method="euler",
     ):
-        self.beta = np.asarray(theta[0], dtype=float)
-        self.gamma = np.asarray(theta[1], dtype=float)
-
-        self.beta_travel = np.asarray(theta[2], dtype=float)
-
         self.N = np.asarray(N, dtype=float)
         self.flow_matrix_dict = flow_matrix_dict
-    
+        self.method = method
+        self.reset(theta)
+
     def reset(self, theta):
-        self.beta = np.asarray(theta[0], dtype=float)
-        self.gamma = np.asarray(theta[1], dtype=float)
-        self.beta_travel = np.asarray(theta[2], dtype=float)
-        
-    def get(self):
-        return (self.beta, self.gamma, self.beta_travel)
+        beta, gamma, beta_travel = theta
 
-    def Euler_step(self, states, t):
-        S, I, R = states
-
-        S = np.asarray(S, dtype=float)
-        I = np.asarray(I, dtype=float)
-        R = np.asarray(R, dtype=float)
-
-        F = self.flow_matrix_dict[t]
-
-        if hasattr(F, "to_numpy"):
-            F = F.to_numpy()
-
-        F = np.asarray(F, dtype=float)
-
-        # infection prevalence in every state
-        prevalence = I / self.N
-
-        # local infection pressure
-        lambda_local = self.beta * prevalence 
-        # Per-capita outgoing mobility
-        C = F / self.N[:, None]
-
-        # Remove self-flow if desired
-        np.fill_diagonal(C, 0)
-
-        # Exposure of residents in i to prevalence in j
-        lambda_travel = (
-            self.beta_travel
-            * C.dot(prevalence)
+        self.beta = np.asarray(beta, dtype=float)
+        self.gamma = np.asarray(gamma, dtype=float)
+        self.beta_travel = np.asarray(
+            beta_travel,
+            dtype=float,
         )
 
-        lambda_total = lambda_local + lambda_travel
+        n = len(self.N)
 
-        new_infected = S * lambda_total
-        new_recovered = self.gamma * I
+        for name, x in [
+            ("beta", self.beta),
+            ("gamma", self.gamma),
+            ("beta_travel", self.beta_travel),
+        ]:
+            if x.shape != (n,):
+                raise ValueError(
+                    f"{name} must have shape ({n},), "
+                    f"got {x.shape}"
+                )
 
-        S_next = S - new_infected
-        I_next = I + new_infected - new_recovered
-        R_next = R + new_recovered
+    def get(self):
+        return (
+            self.beta.copy(),
+            self.gamma.copy(),
+            self.beta_travel.copy(),
+        )
 
-        return S_next, I_next, R_next
-    
+    def _flow_matrix(self, t):
+        F = np.asarray(
+            self.flow_matrix_dict[t],
+            dtype=float,
+        ).copy()
+
+        if F.shape != (len(self.N), len(self.N)):
+            raise ValueError(
+                f"Invalid flow matrix shape: {F.shape}"
+            )
+
+        np.fill_diagonal(F, 0)
+
+        return F
+
+    def _rhs(self, states, t):
+        S, I, R = np.asarray(states, dtype=float)
+
+        # Infection prevalence I_i / N_i
+        prevalence = I / self.N
+
+        # F_ij / N_i
+        F = self._flow_matrix(t)
+        mobility = F / self.N[:, None]
+
+        # Force of infection
+        lambda_local = self.beta * prevalence
+
+        lambda_travel = (
+            self.beta_travel
+            * (mobility @ prevalence)
+        )
+
+        infection = (
+            S
+            * (lambda_local + lambda_travel)
+        )
+
+        recovery = self.gamma * I
+
+        return np.array([
+            -infection,
+            infection - recovery,
+            recovery,
+        ])
+
+    def Euler_step(self, states, t):
+        y = np.asarray(states, dtype=float)
+
+        return tuple(
+            y + self._rhs(y, t)
+        )
+
     def RK4_step(self, states, t):
-        raise NotImplementedError("RK4 step not implemented for NetworkSIRSimple")
-    
+        y = np.asarray(states, dtype=float)
+
+        k1 = self._rhs(y, t)
+        k2 = self._rhs(y + k1 / 2, t)
+        k3 = self._rhs(y + k2 / 2, t)
+        k4 = self._rhs(y + k3, t)
+
+        return tuple(
+            y
+            + (
+                k1
+                + 2 * k2
+                + 2 * k3
+                + k4
+            ) / 6
+        )
+
     def step(self, states, t):
         if self.method == "euler":
             return self.Euler_step(states, t)
-        elif self.method == "rk4":
+
+        if self.method == "rk4":
             return self.RK4_step(states, t)
-        else:
-            raise ValueError(f"Unknown method: {self.method}")
+
+        raise ValueError(
+            f"Unknown method: {self.method}"
+        )
