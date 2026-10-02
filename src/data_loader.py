@@ -262,7 +262,9 @@ class FlowDataLoader:
                 print(f"Warning: missing {path.name}")
                 continue
 
-            frames.append(self.load_day(date))
+            day_df = self.load_day(date)
+            day_df["date"] = pd.Timestamp(date)
+            frames.append(day_df)
 
         if not frames:
             raise ValueError(

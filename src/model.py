@@ -275,15 +275,9 @@ class NetworkSIRSimple:
         # Force of infection
         lambda_local = self.beta * prevalence
 
-        lambda_travel = (
-            self.beta_travel
-            * (mobility @ prevalence)
-        )
+        lambda_travel = self.beta_travel * (mobility @ prevalence)
 
-        infection = (
-            S
-            * (lambda_local + lambda_travel)
-        )
+        infection = S * (lambda_local + lambda_travel)
 
         recovery = self.gamma * I
 

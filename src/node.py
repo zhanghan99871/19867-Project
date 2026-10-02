@@ -7,9 +7,10 @@ from model import SIR, SIRD, NetworkSIRSimple
 import pandas as pd
 
 class Node:
-    def __init__(self, id, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14):
+    def __init__(self, id, name=None, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14):
         # mode can be "fit" or "simulate"
         self.id = id
+        self.name = name 
         self.mode = mode
         self.model_type = model_type
         self.period = period
@@ -156,7 +157,7 @@ class Node:
             )
 
     def fit_model(self, start, end, bounds=[
-                (1e-6, 5.0),   # beta
+                (1e-6, 1.0),   # beta
                 (1e-6, 1.0),   # gamma
                 (1e-8, 0.2)    # mu
             ]):
@@ -183,7 +184,7 @@ class Node:
                 self.params["gamma"]
             ])
             bounds = [
-                (1e-6, 5.0),   # beta
+                (1e-6, 1.0),   # beta
                 (1e-6, 1.0)    # gamma
             ]
         elif self.model_type == "SIRD":
@@ -315,6 +316,7 @@ class Node:
             plt.savefig(path / f"{self.id}.png")
         else:
             plt.show()
+        plt.close()
             
 class Clusters:
     def __init__(self, nodes):
@@ -399,7 +401,7 @@ class Network:
         self.N = np.array([node.total_population for node in nodes], dtype=float)
         beta = np.array([node.params["beta"] for node in nodes], dtype=float)
         gamma = np.array([node.params["gamma"] for node in nodes], dtype=float)
-        beta_travel = np.full(self.num_nodes, 0.1, dtype=float)
+        beta_travel = np.full(self.num_nodes, 1e-3, dtype=float)
 
         self.flow_matrix_dict = self._prepare_flow_matrices(flow_matrix_dict)
         self.model = NetworkSIRSimple(
@@ -529,13 +531,18 @@ class Network:
 
         return states
 
-    def objective(self, beta_travel, initial_state, flow_keys, C_obs):
-        beta_travel = np.asarray(beta_travel, dtype=float)
+    def objective(self, theta_opt, initial_state, flow_keys, gamma, C_obs):
+        theta_opt = np.asarray(theta_opt, dtype=float)
 
-        if beta_travel.shape != (self.num_nodes,):
+        # theta_opt =
+        # [beta_1, ..., beta_n,
+        #  beta_travel_1, ..., beta_travel_n]
+        if theta_opt.shape != (2 * self.num_nodes,):
             return 1e20
 
-        beta, gamma, _ = self.model.get()
+        beta = theta_opt[:self.num_nodes]
+        beta_travel = theta_opt[self.num_nodes:]
+
         states = self.run(
             initial_state,
             (beta, gamma, beta_travel),
@@ -543,56 +550,156 @@ class Network:
             flow_keys=flow_keys,
         )
 
-        if not np.all(np.isfinite(states)) or np.any(states < 0):
+        if not np.all(np.isfinite(states)):
+            return 1e20
+
+        if np.any(states < 0):
             return 1e20
 
         C_pred = self.N[None, :] - states[:, :, 0]
+
         scales = np.maximum(C_obs.max(axis=0), 1.0)
+
         error = (C_pred - C_obs) / scales
 
         return np.mean(error ** 2)
 
     def analyze(self, result, show=False):
-        beta, gamma, _ = self.model.get()
-        beta_travel = np.asarray(result.x, dtype=float)
+        theta_opt = np.asarray(result.x, dtype=float)
+
+        n = self.num_nodes
+
+        if theta_opt.shape != (2 * n,):
+            raise ValueError(
+                f"Expected result.x shape ({2 * n},), "
+                f"got {theta_opt.shape}"
+            )
+
+        beta = theta_opt[:n]
+        beta_travel = theta_opt[n:2 * n]
+
+        # gamma is fixed during network fitting
+        _, gamma, _ = self.model.get()
 
         self.model.reset((beta, gamma, beta_travel))
-        self.fited = result.success
+
+        # update beta stored in individual nodes too
+        for i, node in enumerate(self.nodes):
+            node.params["beta"] = beta[i]
+
+        self.fited = (
+            result.success
+            and np.isfinite(result.fun)
+            and result.fun < 1e19
+        )
 
         print("Network fitting")
         print("success:", result.success)
+        print("valid fit:", self.fited)
         print("loss:", result.fun)
 
         if show:
-            for node_id, value in zip(self.node_ids, beta_travel):
-                print(f"beta_travel[{node_id}]: {value}")
+            for i, node in enumerate(self.nodes):
+                print(
+                    f"{node.id}: "
+                    f"beta={beta[i]:.6f}, "
+                    f"gamma={gamma[i]:.6f}, "
+                    f"beta_travel={beta_travel[i]:.6f}"
+                )
 
-    def fit_model(self, start, end, beta_travel0=None, bounds=(1e-8, 5.0)):
+    def fit_model(
+        self,
+        start,
+        end,
+        beta0=None,
+        beta_travel0=None,
+        beta_bounds=(1e-6, 1.0),
+        beta_travel_bounds=(1e-8, 1.0),
+    ):
         self._refresh_local_params()
+
         initial_state = self.initial_state_from_data(start)
-        C_obs, flow_keys = self._get_fit_data(start, end)
 
-        if beta_travel0 is None:
-            x0 = self.model.beta_travel.copy()
-        elif np.isscalar(beta_travel0):
-            x0 = np.full(self.num_nodes, beta_travel0, dtype=float)
+        C_obs, flow_keys = self._get_fit_data(
+            start,
+            end,
+        )
+
+        # Current model parameters
+        beta_current, gamma, beta_travel_current = self.model.get()
+
+        # Initial beta
+        if beta0 is None:
+            beta_init = beta_current.copy()
+
+        elif np.isscalar(beta0):
+            beta_init = np.full(self.num_nodes, beta0, dtype=float)
+
         else:
-            x0 = np.asarray(beta_travel0, dtype=float)
+            beta_init = np.asarray(beta0, dtype=float)
 
-        if x0.shape != (self.num_nodes,):
+        # Initial beta_travel
+        if beta_travel0 is None:
+            beta_travel_init = beta_travel_current.copy()
+
+        elif np.isscalar(beta_travel0):
+            beta_travel_init = np.full(self.num_nodes, beta_travel0, dtype=float)
+
+        else:
+            beta_travel_init = np.asarray(beta_travel0, dtype=float)
+
+        if beta_init.shape[0] != self.num_nodes:
             raise ValueError(
-                f"beta_travel0 must have shape ({self.num_nodes},), got {x0.shape}"
+                f"beta0 must have shape "
+                f"({self.num_nodes},), "
+                f"got {beta_init.shape}"
             )
 
+        if beta_travel_init.shape[0] != self.num_nodes:
+            raise ValueError(
+                f"beta_travel0 must have shape "
+                f"({self.num_nodes},), "
+                f"got {beta_travel_init.shape}"
+            )
+
+        # [beta, beta_travel]
+        x0 = np.concatenate([
+            beta_init,
+            beta_travel_init,
+        ])
+
+        bounds = (
+            [beta_bounds] * self.num_nodes
+            +
+            [beta_travel_bounds] * self.num_nodes
+        )
+
+        initial_loss = self.objective(
+            x0,
+            initial_state,
+            flow_keys,
+            gamma,
+            C_obs,
+        )
         result = minimize(
             self.objective,
             x0=x0,
-            args=(initial_state, flow_keys, C_obs),
+            args=(
+                initial_state,
+                flow_keys,
+                gamma, 
+                C_obs,
+            ),
             method="L-BFGS-B",
-            bounds=[bounds] * self.num_nodes,
+            bounds=bounds,
+            options={
+                "maxiter": 1000,
+                "maxfun": 100000,
+            },
         )
 
         self.analyze(result)
+
         return result
 
     def predict(self, start, end, initial_state=None, theta=None, flow_keys=None):

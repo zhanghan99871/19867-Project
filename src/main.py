@@ -2,16 +2,17 @@ from node import Node, Clusters, Network
 from data_loader import CaseDataLoader, FlowDataLoader
 import pandas as pd
 import numpy as np 
+from constants import * 
 
 def fit():
-    data_loader = CaseDataLoader(root="data/case_data")
+    data_loader = CaseDataLoader(root="../data/case_data")
     # county_df, metadata = data_loader.load_county("42003")
     for state in ["Pennsylvania", "New York", "California", "Texas", "Florida"]:
         county_df, metadata = data_loader.load_state(state)
         print(metadata)
         population = metadata["population"]
         # 0.1% of total population
-        threshold = 0.002 * population
+        threshold = 0.001 * population
         valid_rows = county_df[
             county_df["confirmed"] >= threshold
         ]
@@ -23,19 +24,61 @@ def fit():
             continue
         start = valid_rows.index[0]
         end = start + 90
-        example = Node(state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
+        example = Node(id=STATE_FIPS[state], name=state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
 
         example.fit_model(start = start, end = end) 
         states = example.predict(start = start, end = start + 180)
-        example.plot_results(states, start = start, end = start + 180, save_path="results")
-        
+        example.plot_results(states, start = start, end = start + 180, save_path="../results")
+
+def fit_with_flow():
+    data_loader = CaseDataLoader(root="../data/case_data")
+    flow_loader = FlowDataLoader(root="../data/flow_data/state")
+    network_start_date = "2020-04-01"
+    # county_df, metadata = data_loader.load_county("42003")
+    nodes = []
+    start = None 
+    network_start_date = pd.Timestamp("2020-05-01")
+    network_end_date = network_start_date + pd.Timedelta(days=180)
+    for state in STATE_FIPS.keys():
+        county_df, metadata = data_loader.load_state(state)
+        print(metadata)
+        valid_rows = county_df[
+            (county_df["date"] >= network_start_date) & (county_df["date"] <= network_end_date)
+        ]
+        start = valid_rows.index[0]
+        example = Node(id=STATE_FIPS[state], name=state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
+
+        example.fit_model(start = start, end = start + 90) 
+        states = example.predict(start = start, end = start + 180)
+        example.plot_results(states, start = start, end = start + 180, save_path="../results")
+        nodes.append(example) 
+    
+    
+    flow_matrix_dict = flow_loader.flow_matrix_range(
+        start_date=network_start_date,
+        end_date=network_end_date,
+        flow_type="pop_flows",
+        include_self=False,
+    )
+
+    network = Network(
+        nodes=nodes,
+        flow_matrix_dict=flow_matrix_dict,
+        mode="fit",
+        method="euler",
+    )
+    
+    network.fit_model(start=start, end=start + 90) 
+    pred = network.predict(start=start, end=start + 180)
+    network.plot_all(pred, start=start, end=start + 180, save_path="../results")
+
 def simulate():
     example = Node("toy", model_type="SIR", mode="simulate", case_data=None, total_population=1000000)
     states = example.predict(start = 0, end = 180, initial_state=[999000, 1000, 0], theta=[0.5, 0.1])
     example.plot_results(states, start = 0, end = 180, save_path="results")
 
 def test_flow():
-    flow_loader = FlowDataLoader(root="data/flow_data/state")
+    flow_loader = FlowDataLoader(root="../data/flow_data/state")
     flow_matrix = flow_loader.flow_matrix("2020-01-01", flow_type="pop_flows", include_self=False)
     print(flow_loader.flow_summary(flow_matrix))
     # flow_matrix_range = flow_loader.flow_matrix_range("2020-01-01", "2020-01-10", flow_type="pop_flows", include_self=True)
@@ -84,7 +127,7 @@ def simulate_flow():
     print(cluster_theta)
     cluster_initial_state = {node.id: initial_state[i] for i, node in enumerate(nodes)}
     cluster_predictions = clusters.predict_all(start=0, end=T-1, thetas=cluster_theta, initial_states=cluster_initial_state)
-    clusters.plot_all(cluster_predictions, start=0, end=T-1, save_path="results/clusters")
+    clusters.plot_all(cluster_predictions, start=0, end=T-1, save_path="../results/clusters")
     flow_strength = 1.0
     flow_matrix = np.array([
                 [0,    1000,    0,  500],
@@ -121,12 +164,13 @@ def simulate_flow():
         flow_keys=list(dates),
     )
     
-    network.plot_all(states, 0, T-1, save_path="results/network")
+    network.plot_all(states, 0, T-1, save_path="../results/network")
     
     
 
 if __name__ == "__main__":
     # fit()
+    fit_with_flow()
     # simulate()
     # test_flow()
-    simulate_flow()
+    # simulate_flow()
