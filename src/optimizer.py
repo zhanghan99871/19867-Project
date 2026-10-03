@@ -2,6 +2,11 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+from pathlib import Path
+import os 
+import time 
 
 
 class Optimizer:
@@ -19,6 +24,10 @@ class Optimizer:
     def update_network_flow(self, optimized_flow):
         self.network.flow_matrix_dict = optimized_flow
         self.network.model.flow_matrix_dict = optimized_flow
+    
+    def reset_network_flow(self, flow):
+        self.network.flow_matrix_dict = flow
+        self.network.model.flow_matrix_dict = flow 
 
 
 class BinaryReduceEdgeOptimizer(Optimizer):
@@ -533,10 +542,10 @@ class BinaryClusterOptimizer(Optimizer):
     def __init__(self, network, name="cluster_binary"):
         super().__init__(network, name)
 
-    def optimize(self, start, end, K=3, travel_reduce_ratio=0.2, time_limit=None, mip_gap=0.01):
+    def optimize(self, start, end, K=3, travel_reduce_ratio=None, time_limit=None, mip_gap=0.01):
         if not self.network.fited:
             raise ValueError("Network model must be fitted before optimization.")
-        if not 0 <= travel_reduce_ratio <= 1:
+        if travel_reduce_ratio is not None and not 0 <= travel_reduce_ratio <= 1:
             raise ValueError("travel_reduce_ratio must be between 0 and 1.")
         if K < 1:
             raise ValueError("K must be at least 1.")
@@ -555,7 +564,9 @@ class BinaryClusterOptimizer(Optimizer):
 
         initial_state = net.initial_state_from_data(start)
         initial_frac = initial_state / N[:, None]
-
+        
+        min_cluster_population = np.sum(N) / (K + 1)
+ 
         edges = []
         for i in range(n):
             for j in range(n):
@@ -613,11 +624,27 @@ class BinaryClusterOptimizer(Optimizer):
 
         # Cluster usage
         for k in range(K):
+            # If node i is assigned to k, cluster k must be used
             for i in range(n):
                 model.addConstr(assign[i, k] <= used[k])
 
+            # If cluster k is used, it must contain at least one node
             model.addConstr(
-                used[k] <= gp.quicksum(assign[i, k] for i in range(n))
+                used[k] <= gp.quicksum(
+                    assign[i, k]
+                    for i in range(n)
+                )
+            )
+
+            # Minimum population for every used cluster
+            cluster_population = gp.quicksum(
+                N[i] * assign[i, k]
+                for i in range(n)
+            )
+
+            model.addConstr(
+                cluster_population
+                >= min_cluster_population * used[k]
             )
 
         # Symmetry breaking: used clusters are 0,1,2,... consecutively
@@ -715,16 +742,16 @@ class BinaryClusterOptimizer(Optimizer):
         }
 
         total_travel = sum(edge_flow.values())
-        M = travel_reduce_ratio * total_travel
-
-        model.addConstr(
-            gp.quicksum(
-                edge_flow[i, j]
-                * (1 - keep[i, j])
-                for i, j in edges
-            ) <= M,
-            name="travel_budget",
-        )
+        if travel_reduce_ratio is not None:
+            M = travel_reduce_ratio * total_travel
+            model.addConstr(
+                gp.quicksum(
+                    edge_flow[i, j]
+                    * (1 - keep[i, j])
+                    for i, j in edges
+                ) <= M,
+                name="travel_budget",
+            )
 
         # Minimize new infections during this interval.
         # Since the initial S is fixed, this is equivalent
@@ -787,7 +814,8 @@ class BinaryClusterOptimizer(Optimizer):
         print("objective:", model.ObjVal)
         print("number of clusters:", len(clusters))
         print("total travel:", total_travel)
-        print("allowed reduction:", M)
+        if travel_reduce_ratio is not None:
+            print("allowed reduction:", M)
         print("removed travel:", total_removed_flow)
 
         print("clusters:")
@@ -873,3 +901,554 @@ class BinaryClusterOptimizer(Optimizer):
                         F[i, j] = 0.0
 
         return optimized_flow
+
+    def visualize_clusters(self, result, start, end, save_path=None, show_removed=False):
+        net = self.network
+        start, end = int(start), int(end)
+        node_cluster = result["node_cluster"]
+
+        dates = pd.to_datetime(
+            net.nodes[0].case_data["date"].iloc[start:end]
+        )
+        flow_keys = [pd.Timestamp(d).normalize() for d in dates]
+
+        # Aggregate flow over optimization horizon
+        total_flow = np.zeros((net.num_nodes, net.num_nodes))
+        for date in flow_keys:
+            total_flow += net.flow_matrix_dict[date]
+
+        G = nx.DiGraph()
+
+        # Add nodes
+        for i, node in enumerate(net.nodes):
+            G.add_node(
+                i,
+                name=node.name,
+                cluster=node_cluster[i],
+                population=node.total_population,
+            )
+
+        # Add edges
+        for i in range(net.num_nodes):
+            for j in range(net.num_nodes):
+                if i == j or total_flow[i, j] <= 0:
+                    continue
+
+                same_cluster = (
+                    node_cluster[i] == node_cluster[j]
+                )
+
+                if same_cluster or show_removed:
+                    G.add_edge(
+                        i,
+                        j,
+                        flow=total_flow[i, j],
+                        kept=same_cluster,
+                    )
+
+        # Layout
+        pos = nx.spring_layout(
+            G,
+            seed=42,
+            weight="flow",
+            k=1.5,
+        )
+
+        plt.figure(figsize=(14, 10))
+
+        # Node size proportional to population
+        populations = np.array([
+            net.nodes[i].total_population
+            for i in range(net.num_nodes)
+        ], dtype=float)
+
+        node_sizes = (
+            800
+            + 3000
+            * populations
+            / populations.max()
+        )
+
+        node_colors = [
+            node_cluster[i]
+            for i in range(net.num_nodes)
+        ]
+
+        nx.draw_networkx_nodes(
+            G,
+            pos,
+            node_size=node_sizes,
+            node_color=node_colors,
+            cmap=plt.cm.tab10,
+            alpha=0.9,
+        )
+
+        labels = {
+            i: net.nodes[i].name
+            for i in range(net.num_nodes)
+        }
+
+        nx.draw_networkx_labels(
+            G,
+            pos,
+            labels=labels,
+            font_size=9,
+        )
+
+        kept_edges = [
+            (u, v)
+            for u, v, d in G.edges(data=True)
+            if d["kept"]
+        ]
+
+        removed_edges = [
+            (u, v)
+            for u, v, d in G.edges(data=True)
+            if not d["kept"]
+        ]
+
+        # Scale edge width by log(flow)
+        def edge_width(edges):
+            if not edges:
+                return []
+
+            flows = np.array([
+                G[u][v]["flow"]
+                for u, v in edges
+            ])
+
+            log_flow = np.log1p(flows)
+
+            return (
+                0.5
+                + 3.0
+                * log_flow
+                / log_flow.max()
+            )
+
+        # Internal edges
+        nx.draw_networkx_edges(
+            G,
+            pos,
+            edgelist=kept_edges,
+            width=edge_width(kept_edges),
+            alpha=0.6,
+            arrows=True,
+            arrowsize=12,
+        )
+
+        # Removed cross-cluster edges
+        if show_removed:
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                edgelist=removed_edges,
+                width=edge_width(removed_edges),
+                alpha=0.2,
+                style="dashed",
+                arrows=True,
+                arrowsize=10,
+            )
+
+        plt.title(
+            f"Optimized Travel Bubbles "
+            f"({len(result['clusters'])} clusters)"
+        )
+
+        plt.axis("off")
+        plt.tight_layout()
+
+        if save_path is not None:
+            path = Path(save_path)
+            path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            plt.savefig(
+                path,
+                dpi=300,
+                bbox_inches="tight",
+            )
+        else:
+            plt.show()
+
+        plt.close()
+
+    def visualize_cluster_population(self, result, save_path=None):
+        net = self.network
+
+        cluster_ids = sorted(result["clusters"].keys())
+
+        populations = [
+            sum(
+                net.nodes[i].total_population
+                for i in result["clusters"][k]
+            )
+            for k in cluster_ids
+        ]
+
+        labels = [
+            f"Cluster {k}"
+            for k in cluster_ids
+        ]
+
+        plt.figure(figsize=(8, 5))
+        plt.bar(labels, populations)
+
+        plt.ylabel("Population")
+        plt.title("Population by Travel Bubble")
+        plt.tight_layout()
+
+        if save_path:
+            path = Path(save_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(path, dpi=300)
+        else:
+            plt.show()
+
+        plt.close()
+
+
+def compare_optimizers(
+    network,
+    start,
+    end,
+    travel_reduce_ratio=0.2,
+    K=3,
+    time_limit=600,
+    mip_gap=0.05,
+    output_dir="../results/network",
+):
+    os.makedirs(output_dir, exist_ok=True)
+
+    original_flow = {
+        date: F.copy()
+        for date, F in network.flow_matrix_dict.items()
+    }
+
+    def set_flow(flow):
+        copied = {
+            date: F.copy()
+            for date, F in flow.items()
+        }
+        network.flow_matrix_dict = copied
+        network.model.flow_matrix_dict = copied
+
+    def infected_curve(states):
+        # sum_node I(t)
+        return np.sum(states[:, :, 1], axis=1)
+
+    records = []
+    curves = {}
+
+    dates = pd.to_datetime(
+        network.nodes[0].case_data["date"].iloc[start:end + 1]
+    )
+
+    # =========================================================
+    # 1. Baseline
+    # =========================================================
+    set_flow(original_flow)
+
+    baseline_pred = network.predict(
+        start=start,
+        end=end,
+    )
+
+    baseline_new_infected = network.sum_infected(
+        baseline_pred
+    )
+
+    curves["Baseline"] = infected_curve(
+        baseline_pred
+    )
+
+    records.append({
+        "name": "Baseline",
+        "new_infected": baseline_new_infected,
+        "removed_flow": 0.0,
+        "removed_ratio": 0.0,
+        "runtime": 0.0,
+    })
+
+    # =========================================================
+    # 2. Uniform reduction
+    # =========================================================
+    reduced_flow = {
+        date: F * (1 - travel_reduce_ratio)
+        for date, F in original_flow.items()
+    }
+
+    set_flow(reduced_flow)
+
+    even_pred = network.predict(
+        start=start,
+        end=end,
+    )
+
+    even_new_infected = network.sum_infected(
+        even_pred
+    )
+
+    curves["Uniform Reduction"] = infected_curve(
+        even_pred
+    )
+
+    records.append({
+        "name": "Uniform Reduction",
+        "new_infected": even_new_infected,
+        "removed_flow": None,
+        "removed_ratio": travel_reduce_ratio,
+        "runtime": 0.0,
+    })
+
+    # Restore before optimization
+    set_flow(original_flow)
+
+    # =========================================================
+    # 3. Optimizers
+    # =========================================================
+    optimizer_specs = [
+        (
+            "Binary Edge",
+            BinaryReduceEdgeOptimizer,
+        ),
+        (
+            "Continuous Edge",
+            ContinuousReduceEdgeOptimizer,
+        ),
+        (
+            "Binary Node",
+            BinaryReduceNodeOptimizer,
+        ),
+        (
+            "Cluster",
+            BinaryClusterOptimizer,
+        ),
+    ]
+
+    for display_name, optimizer_class in optimizer_specs:
+
+        print("\n" + "=" * 70)
+        print("Running:", display_name)
+        print("=" * 70)
+
+        # VERY IMPORTANT:
+        # each optimizer starts from exactly the same original flow
+        set_flow(original_flow)
+
+        optimizer = optimizer_class(network)
+
+        t0 = time.time()
+
+        if optimizer_class is BinaryClusterOptimizer:
+            result = optimizer.optimize(
+                start=start,
+                end=end,
+                K=K,
+                travel_reduce_ratio=None,
+                time_limit=time_limit,
+                mip_gap=mip_gap,
+            )
+        else:
+            result = optimizer.optimize(
+                start=start,
+                end=end,
+                travel_reduce_ratio=travel_reduce_ratio,
+                time_limit=time_limit,
+                mip_gap=mip_gap,
+            )
+
+        runtime = time.time() - t0
+
+        if result is None:
+            print(display_name, "failed.")
+
+            records.append({
+                "name": display_name,
+                "new_infected": None,
+                "removed_flow": None,
+                "removed_ratio": None,
+                "runtime": runtime,
+            })
+
+            continue
+
+        optimized_flow = (
+            optimizer.build_optimized_flow_matrices(
+                result,
+                start=start,
+                end=end,
+            )
+        )
+
+        set_flow(optimized_flow)
+
+        optimized_pred = network.predict(
+            start=start,
+            end=end,
+        )
+
+        new_infected = network.sum_infected(
+            optimized_pred
+        )
+
+        curves[display_name] = infected_curve(
+            optimized_pred
+        )
+
+        removed_flow = result.get(
+            "removed_flow",
+            0.0,
+        )
+
+        total_travel = result.get(
+            "total_travel",
+            0.0,
+        )
+
+        removed_ratio = (
+            removed_flow / total_travel
+            if total_travel > 0
+            else 0.0
+        )
+
+        records.append({
+            "name": display_name,
+            "new_infected": new_infected,
+            "removed_flow": removed_flow,
+            "removed_ratio": removed_ratio,
+            "runtime": runtime,
+        })
+
+    # Restore network after comparison
+    set_flow(original_flow)
+
+    # =========================================================
+    # 4. Save comparison text
+    # =========================================================
+    summary_path = os.path.join(
+        output_dir,
+        "optimizer_compare.txt",
+    )
+
+    with open(summary_path, "w") as f:
+        f.write("Optimizer Comparison\n")
+        f.write("=" * 80 + "\n")
+
+        f.write(
+            f"Start: {dates.iloc[0]}\n"
+        )
+        f.write(
+            f"End: {dates.iloc[-1]}\n"
+        )
+        f.write(
+            f"Travel reduction budget: "
+            f"{travel_reduce_ratio:.4f}\n"
+        )
+        f.write(
+            f"Cluster K: {K}\n"
+        )
+        f.write("\n")
+
+        f.write(
+            f"{'Method':<22}"
+            f"{'New Infected':>18}"
+            f"{'Reduction':>15}"
+            f"{'Travel Reduce':>18}"
+            f"{'Runtime(s)':>15}\n"
+        )
+
+        f.write("-" * 88 + "\n")
+
+        for record in records:
+            name = record["name"]
+
+            if record["new_infected"] is None:
+                f.write(
+                    f"{name:<22}"
+                    f"{'FAILED':>18}"
+                    f"{'-':>15}"
+                    f"{'-':>18}"
+                    f"{record['runtime']:>15.2f}\n"
+                )
+                continue
+
+            reduction = (
+                baseline_new_infected
+                - record["new_infected"]
+            )
+
+            f.write(
+                f"{name:<22}"
+                f"{record['new_infected']:>18.2f}"
+                f"{reduction:>15.2f}"
+                f"{record['removed_ratio']:>17.2%}"
+                f"{record['runtime']:>15.2f}\n"
+            )
+
+        f.write("\n")
+
+        f.write(
+            f"Baseline new infected: "
+            f"{baseline_new_infected:.2f}\n"
+        )
+
+        f.write("\nRelative infection reduction:\n")
+
+        for record in records:
+            if (
+                record["new_infected"] is None
+                or record["name"] == "Baseline"
+            ):
+                continue
+
+            reduction_ratio = (
+                baseline_new_infected
+                - record["new_infected"]
+            ) / baseline_new_infected
+
+            f.write(
+                f"{record['name']}: "
+                f"{reduction_ratio:.2%}\n"
+            )
+
+    # =========================================================
+    # 5. Plot sum-node infected curves
+    # =========================================================
+    plt.figure(figsize=(12, 7))
+
+    for name, curve in curves.items():
+        plt.plot(
+            dates,
+            curve,
+            label=name,
+            linewidth=2,
+        )
+
+    plt.xlabel("Date")
+    plt.ylabel("Total Currently Infected")
+    plt.title("Sum-node Infected Population by Intervention")
+    plt.legend()
+    plt.grid(alpha=0.25)
+    plt.xticks(rotation=30)
+    plt.tight_layout()
+
+    figure_path = os.path.join(
+        output_dir,
+        "optimizer_compare_infected.png",
+    )
+
+    plt.savefig(
+        figure_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    plt.close()
+
+    print("\nComparison saved to:")
+    print(summary_path)
+    print(figure_path)
+
+    return records, curves

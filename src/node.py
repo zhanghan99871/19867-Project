@@ -7,13 +7,14 @@ from model import SIR, SIRD, NetworkSIRSimple
 import pandas as pd
 
 class Node:
-    def __init__(self, id, name=None, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14):
+    def __init__(self, id, name=None, mode = "fit", model_type="SIRD", case_data=None, total_population=0, period=14, method="euler"):
         # mode can be "fit" or "simulate"
         self.id = id
         self.name = name 
         self.mode = mode
         self.model_type = model_type
         self.period = period
+        self.method = method
         self.fited = False
         self.model = None
         if model_type == "SIRD":
@@ -22,13 +23,13 @@ class Node:
                 "gamma": 0.1,
                 "mu": 0.005
             }
-            self.model = SIRD((self.params["beta"], self.params["gamma"], self.params["mu"]), total_population)
+            self.model = SIRD((self.params["beta"], self.params["gamma"], self.params["mu"]), total_population, method=self.method)
         elif model_type == "SIR":
             self.params = {
                 "beta": 0.25,
                 "gamma": 0.1
             }
-            self.model = SIR((self.params["beta"], self.params["gamma"]), total_population)
+            self.model = SIR((self.params["beta"], self.params["gamma"]), total_population, method=self.method)
         else:
             raise NotImplementedError(
                 f"Model type {model_type} is not implemented."
@@ -40,7 +41,6 @@ class Node:
         return self.params.copy()
 
     def step(self, state, theta, t):
-        N = self.total_population
         self.model.reset(theta)
         return self.model.step(state, t)
 
