@@ -1,0 +1,8 @@
+pathlib
+pandas 
+re 
+numpy
+matplotlib
+argparse
+gurobipy
+networkx

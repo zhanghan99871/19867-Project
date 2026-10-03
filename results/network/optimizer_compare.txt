@@ -1,0 +1,24 @@
+Optimizer Comparison
+================================================================================
+Start: 2020-07-30 00:00:00
+End: 2020-08-29 00:00:00
+Travel reduction budget: 0.2000
+Cluster K: 3
+
+Method                      New Infected      Reduction     Travel Reduce     Runtime(s)
+----------------------------------------------------------------------------------------
+Baseline                       232383.86           0.00            0.00%           0.00
+Uniform Reduction              189200.22       43183.64           20.00%           0.00
+Binary Edge                    154366.81       78017.05           13.83%           4.50
+Continuous Edge                135753.74       96630.12           20.00%           6.78
+Binary Node                    178403.69       53980.17           16.77%           5.72
+Cluster                         94654.33      137729.54           86.89%           4.42
+
+Baseline new infected: 232383.86
+
+Relative infection reduction:
+Uniform Reduction: 18.58%
+Binary Edge: 33.57%
+Continuous Edge: 41.58%
+Binary Node: 23.23%
+Cluster: 59.27%

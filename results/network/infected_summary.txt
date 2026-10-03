@@ -1,0 +1,8 @@
+Baseline infected: 232383.8643846684
+Evenly reduced infected: 189200.22008429898
+cluster_binary optimized infected: 200190.1147120318
+
+Baseline infected: 232383.8643846684
+Evenly reduced infected: 189200.22008429898
+cluster_binary optimized infected: 94654.32714873238
+
