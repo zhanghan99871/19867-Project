@@ -498,62 +498,9 @@ python main.py \
     --opt_days 60
 ```
 
-## Epidemic Network Model
-
-For node \(i\), the model contains local infections and infections caused by travel from other nodes.
-
-A normalized SIR formulation can be written as
-
-\[
-s_i(t+1)
-=
-s_i(t)
-
-- \beta_i s_i(t)i_i(t)
-- \text{travel infection}\_i(t),
-  \]
-
-\[
-i_i(t+1)
-=
-i_i(t)
-
-- \beta_i s_i(t)i_i(t)
-- \text{travel infection}\_i(t)
-
-* \gamma_i i_i(t),
-  \]
-
-\[
-r_i(t+1)
-=
-r_i(t)
-
-- \gamma_i i_i(t).
-  \]
-
-Travel infection depends on the flow matrix \(F\), the infection level in connected nodes, and the fitted travel transmission parameters.
-
 ## Evaluation Metric
 
 The primary intervention metric is the total number of new infections during the optimization horizon.
-
-For the full network,
-
-\[
-\text{New Infections}
-=
-\sum*i
-\left(
-S_i(t*{\mathrm{start}})
-
-- S*i(t*{\mathrm{end}})
-  \right).
-  \]
-
-This is implemented by comparing the total susceptible population at the beginning and end of the prediction period.
-
-A smaller value indicates fewer new infections during the intervention period.
 
 ## Output
 
