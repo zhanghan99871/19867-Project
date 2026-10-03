@@ -3,6 +3,7 @@ from data_loader import CaseDataLoader, FlowDataLoader
 import pandas as pd
 import numpy as np 
 from constants import * 
+from optimizer import * 
 
 def fit():
     data_loader = CaseDataLoader(root="../data/case_data")
@@ -39,18 +40,18 @@ def fit_with_flow():
     start = None 
     network_start_date = pd.Timestamp("2020-05-01")
     network_end_date = network_start_date + pd.Timedelta(days=180)
-    for state in STATE_FIPS.keys():
+    for state in STATE_FIPS_SMALL.keys():
         county_df, metadata = data_loader.load_state(state)
         print(metadata)
         valid_rows = county_df[
             (county_df["date"] >= network_start_date) & (county_df["date"] <= network_end_date)
         ]
         start = valid_rows.index[0]
-        example = Node(id=STATE_FIPS[state], name=state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
+        example = Node(id=STATE_FIPS_SMALL[state], name=state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
 
         example.fit_model(start = start, end = start + 90) 
         states = example.predict(start = start, end = start + 180)
-        example.plot_results(states, start = start, end = start + 180, save_path="../results")
+        example.plot_results(states, start = start, end = start + 180, save_path="../results/single")
         nodes.append(example) 
     
     
@@ -70,7 +71,7 @@ def fit_with_flow():
     
     network.fit_model(start=start, end=start + 90) 
     pred = network.predict(start=start, end=start + 180)
-    network.plot_all(pred, start=start, end=start + 180, save_path="../results")
+    network.plot_all(pred, start=start, end=start + 180, save_path="../results/network")
 
 def simulate():
     example = Node("toy", model_type="SIR", mode="simulate", case_data=None, total_population=1000000)
@@ -166,11 +167,84 @@ def simulate_flow():
     
     network.plot_all(states, 0, T-1, save_path="../results/network")
     
+def test_optimizer():
+    data_loader = CaseDataLoader(root="../data/case_data")
+    flow_loader = FlowDataLoader(root="../data/flow_data/state")
+    network_start_date = "2020-04-01"
+    # county_df, metadata = data_loader.load_county("42003")
+    nodes = []
+    start = None 
+    network_start_date = pd.Timestamp("2020-05-01")
+    network_end_date = network_start_date + pd.Timedelta(days=180)
+    for state in STATE_FIPS_SMALL.keys():
+        county_df, metadata = data_loader.load_state(state)
+        print(metadata)
+        valid_rows = county_df[
+            (county_df["date"] >= network_start_date) & (county_df["date"] <= network_end_date)
+        ]
+        start = valid_rows.index[0]
+        example = Node(id=STATE_FIPS_SMALL[state], name=state, model_type="SIR", case_data=county_df, total_population=metadata["population"])
+
+        example.fit_model(start = start, end = start + 90) 
+        states = example.predict(start = start+90, end = start + 120)
+        # example.plot_results(states, start = start+90, end = start + 120, save_path="../results/single")
+        nodes.append(example) 
     
+    
+    flow_matrix_dict = flow_loader.flow_matrix_range(
+        start_date=network_start_date,
+        end_date=network_end_date,
+        flow_type="pop_flows",
+        include_self=False,
+    )
+
+    network = Network(
+        nodes=nodes,
+        flow_matrix_dict=flow_matrix_dict,
+        mode="fit",
+        method="euler",
+    )
+    
+    network.fit_model(start=start, end=start + 90) 
+    pred = network.predict(start=start+90, end=start + 120)
+    baseline_infected = network.sum_infected(pred)
+    network.plot_all(pred, start=start+90, end=start + 120, save_path="../results/network/baseline")
+
+    optimizer = BinaryClusterOptimizer(network)
+
+    result = optimizer.optimize(
+        start=start + 90,
+        end=start + 120,
+        travel_reduce_ratio=0.2,
+        time_limit=600,
+        mip_gap=0.05,
+    )
+
+    if result is not None:
+        optimized_flow = optimizer.build_optimized_flow_matrices(result, start=start + 90, end=start + 120)
+
+        optimizer.update_network_flow(optimized_flow)
+
+        optimized_pred = network.predict(
+            start=start+90,
+            end=start + 120
+        )
+        optimized_infected = network.sum_infected(optimized_pred)
+        network.plot_all(
+            optimized_pred,
+            start=start+90,
+            end=start + 120,
+            save_path="../results/network/optimized"
+        )
+    with open("../results/network/infected_summary.txt", "a") as f:
+        f.write(f"Baseline infected: {baseline_infected}\n")
+        f.write(f"{optimizer.name} optimized infected: {optimized_infected}\n")
+        f.write("\n")
 
 if __name__ == "__main__":
     # fit()
-    fit_with_flow()
+    # fit_with_flow()
     # simulate()
     # test_flow()
     # simulate_flow()
+    test_optimizer()

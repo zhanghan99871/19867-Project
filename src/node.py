@@ -250,7 +250,7 @@ class Node:
         )
         return states
     
-    def plot_results(self, states, start, end=None, save_path=None):
+    def plot_results(self, states, start, end=None, save_path=None, infected_only=False):
         if end is None:
             end = len(self.case_data) - 1
 
@@ -271,18 +271,24 @@ class Node:
                 label="SIRD predicted"
             )
         elif self.mode == "simulate":
-            plt.plot(
-                states[:, 0],
-                label="Susceptible"
-            )
-            plt.plot(
-                states[:, 1],
-                label="Infected"
-            )
-            plt.plot(
-                states[:, 2],
-                label="Recovered"
-            )
+            if infected_only:
+                plt.plot(
+                    states[:, 1],
+                    label="Infected"
+                )
+            else:
+                plt.plot(
+                    states[:, 0],
+                    label="Susceptible"
+                ) 
+                plt.plot(
+                    states[:, 1],
+                    label="Infected"
+                )
+                plt.plot(
+                    states[:, 2],
+                    label="Recovered"
+                )
         if self.model_type == "SIRD":
             D_pred = states[:, 3]
             if self.mode == "fit":
@@ -311,9 +317,12 @@ class Node:
         plt.tight_layout(rect=[0, 0, 1, 0.95])
         plt.title(f"{self.mode.capitalize()} {self.model_type} Model for {self.id}")
         if save_path:
-            path = Path(save_path + f"/{self.mode.capitalize()}/{self.model_type}")
+            path = Path(save_path + f"/{self.model_type}")
             os.makedirs(path, exist_ok=True)
-            plt.savefig(path / f"{self.id}.png")
+            if self.name is not None:
+                plt.savefig(path / f"{self.id}-{self.name}.png")
+            else:
+                plt.savefig(path / f"{self.id}.png")
         else:
             plt.show()
         plt.close()
@@ -374,6 +383,16 @@ class Clusters:
             print(f"Finished predicting for {node.id}.")
 
         return predictions
+        
+    def sum_infected(self, predictions):
+        total_new_infected = 0.0
+
+        for node in self.nodes:
+            states = predictions[node.id]
+            S = states[:, 0]
+            total_new_infected += S[0] - S[-1]
+
+        return total_new_infected
 
     def plot_all(self, predictions, start, end=None, save_path=None, plot_sum=True):
         for node in self.nodes:
@@ -386,7 +405,7 @@ class Clusters:
                 predictions[node.id] for node in self.nodes
             )
             print(f"Plotting results for node {self.sum_node.id}...")
-            self.sum_node.plot_results(predictions[self.sum_node.id], start, end, save_path)
+            self.sum_node.plot_results(predictions[self.sum_node.id], start, end, save_path, infected_only=True)
             print(f"Finished plotting results for node {self.sum_node.id}.")
         
             
@@ -732,6 +751,10 @@ class Network:
             node_id: states[:, i, :]
             for i, node_id in enumerate(self.node_ids)
         }
+    
+    def sum_infected(self, states):
+        S = states[:, :, 0]
+        return np.sum(S[0] - S[-1])
 
     def plot_all(self, states, start, end=None, save_path=None, plot_sum=True):
         predictions = self.split_predictions(states)
@@ -755,5 +778,6 @@ class Network:
                 start=start,
                 end=end,
                 save_path=save_path,
+                infected_only=True
             )
             print(f"Finished plotting results for node {self.sum_node.id}.")

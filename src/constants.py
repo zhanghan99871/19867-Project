@@ -50,3 +50,16 @@ STATE_FIPS = {
     "Wisconsin": "55",
     "Wyoming": "56",
 }
+
+STATE_FIPS_SMALL = {
+    "Pennsylvania": "42",
+    "New York": "36",
+    "New Jersey": "34",
+    "Delaware": "10",
+    "Maryland": "24",
+    "West Virginia": "54",
+    "Ohio": "39",
+    "Virginia": "51",
+    "Kentucky": "21",
+    "Michigan": "26",
+}

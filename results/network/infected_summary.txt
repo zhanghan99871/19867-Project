@@ -1,0 +1,11 @@
+Baseline infected: 232383.8643846684
+Optimized infected: 154366.8098445182
+
+Baseline infected: 232383.8643846684
+Optimized infected: 178403.69323336694
+
+Baseline infected: 232383.8643846684
+Optimized infected: 135753.74341213563
+
+Baseline infected: 232383.8643846684
+Optimized infected: 178403.69323336694
