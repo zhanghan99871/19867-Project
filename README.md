@@ -28,11 +28,11 @@ The optimizer chooses which edges to remove while minimizing epidemic spread sub
 
 Conceptually,
 
-\[
-\sum*{(i,j)} F*{ij}(1-y\_{ij}) \le M,
-\]
+$$
+\sum_{(i,j)} F_{ij}(1-y_{ij}) \le M,
+$$
 
-where \(y\_{ij}\in\{0,1\}\) indicates whether edge \((i,j)\) is kept.
+where $y_{ij}\in\{0,1\}$ indicates whether edge $(i,j)$ is kept.
 
 ---
 
@@ -42,15 +42,15 @@ where \(y\_{ij}\in\{0,1\}\) indicates whether edge \((i,j)\) is kept.
 
 Instead of completely removing an edge, the optimizer chooses a continuous travel retention ratio:
 
-\[
-0 \le y\_{ij} \le 1.
-\]
+$$
+0 \le y_{ij} \le 1.
+$$
 
 The optimized flow becomes
 
-\[
-F'_{ij}=y_{ij}F\_{ij}.
-\]
+$$
+F'_{ij}=y_{ij}F_{ij}.
+$$
 
 This provides a more flexible benchmark than binary edge removal.
 
@@ -62,11 +62,11 @@ This provides a more flexible benchmark than binary edge removal.
 
 The optimizer selects geographic nodes to isolate.
 
-If node \(i\) is disabled, all incoming and outgoing travel involving that node is removed:
+If node $i$ is disabled, all incoming and outgoing travel involving that node is removed:
 
-\[
-F*{ij}=F*{ji}=0.
-\]
+$$
+F_{ij}=F_{ji}=0.
+$$
 
 The remaining nodes continue to interact normally.
 
@@ -78,17 +78,17 @@ The remaining nodes continue to interact normally.
 
 Each node is assigned to one travel bubble. Travel is preserved within each bubble and removed between different bubbles.
 
-If nodes \(i\) and \(j\) belong to the same cluster,
+If nodes $i$ and $j$ belong to the same cluster,
 
-\[
+$$
 F'_{ij}=F_{ij}.
-\]
+$$
 
 Otherwise,
 
-\[
-F'\_{ij}=0.
-\]
+$$
+F'_{ij}=0.
+$$
 
 The optimizer supports up to `K` clusters and can impose minimum population requirements on each active cluster.
 
@@ -110,7 +110,9 @@ The original travel matrices are used without modification.
 
 Every travel edge is reduced by the same fraction:
 
-F'\_{ij} = (1-r)F\_{ij},
+$$
+F'_{ij} = (1-r)F_{ij},
+$$
 
 where `r` is specified by `--travel_reduce_ratio`.
 
@@ -309,9 +311,9 @@ For the edge and node optimizers, this represents the maximum fraction of total 
 
 For the uniform-reduction baseline, every edge is multiplied by
 
-\[
-1-\text{travel_reduce_ratio}.
-\]
+$$
+1-\text{travel\_reduce\_ratio}.
+$$
 
 For example,
 
